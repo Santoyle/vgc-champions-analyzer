@@ -4,7 +4,7 @@
   "date_start": "2026-04-08",
   "date_end": "2026-06-17",
   "schema_version": "1.0.0",
-  "last_verified": "2026-04-21",
+  "last_verified": "2026-04-20",
   "checksum_sha256": "13f33fc4a157aa85f9bb7bf786341ea780f6e1f5feecb71aa99ecea3e9ae4c54",
   "transition_window_days": 7,
   "battle_format": {

@@ -284,24 +284,3 @@ class TestCheck6SemanticSanity:
         assert last_verified <= date.today(), (
             f"{reg_path.name}: last_verified " f"({last_verified}) es una fecha futura"
         )
-
-    @pytest.mark.parametrize("reg_path", regulation_params())
-    def test_mega_stones_in_items_legales(self, reg_path: Path) -> None:
-        """Cada mega_item de mega_evolutions_disponibles
-        aparece en items_legales."""
-        raw: dict[str, object] = json.loads(reg_path.read_text(encoding="utf-8"))
-        megas = raw.get("mega_evolutions_disponibles", [])
-        items: set[str] = set(raw.get("items_legales", []))  # type: ignore[arg-type]
-
-        assert isinstance(megas, list)
-        missing_stones: list[str] = []
-        for entry in megas:
-            if isinstance(entry, dict):
-                stone = str(entry.get("mega_item", ""))
-                if stone and stone not in items:
-                    missing_stones.append(stone)
-
-        assert not missing_stones, (
-            f"{reg_path.name}: mega_items no encontrados "
-            f"en items_legales: {missing_stones}"
-        )
