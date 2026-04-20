@@ -1,0 +1,8 @@
+-r requirements.txt
+pytest>=8.0
+pytest-xdist>=3.5
+ruff>=0.4
+black>=24.0
+mypy>=1.9
+pre-commit>=3.7
+pandera[mypy]>=0.20
