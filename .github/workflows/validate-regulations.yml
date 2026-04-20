@@ -1,0 +1,89 @@
+name: validate-regulations
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "regulations/**"
+      - "data/pokemon_master.json"
+      - "src/app/core/schema.py"
+      - "src/app/core/checksum.py"
+      - "tests/test_regulations_ci.py"
+  push:
+    branches: [main]
+    paths:
+      - "regulations/**"
+  # Permite ejecutar manualmente desde la UI de GitHub Actions
+  workflow_dispatch:
+
+# Cancela runs anteriores del mismo workflow en la misma rama
+# cuando se pushea un nuevo commit, evitando colas innecesarias
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    # Nombre exacto requerido por la configuración de branch protection
+    name: Validate regulations JSON
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # Descarga el código del repositorio en el runner
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Instala Python 3.12 con caché de pip para acelerar runs posteriores
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # Solo instala las dependencias estrictamente necesarias para los checks:
+      # pydantic (schema), pytest y pytest-xdist (ejecución paralela con -n auto)
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pydantic>=2.6" "pytest>=8.0" "pytest-xdist>=3.0"
+
+      # Verifica sintaxis JSON de todos los archivos en regulations/ usando
+      # python -m json.tool (stdlib, sin dependencias extra). Falla rápido
+      # antes de llegar a pytest si algún JSON está malformado.
+      - name: Lint JSON files
+        shell: bash
+        run: |
+          echo "Verificando sintaxis JSON de regulations/..."
+          for f in regulations/*.json; do
+            python -m json.tool "$f" > /dev/null && \
+              echo "✓ $f" || \
+              { echo "✗ $f: JSON inválido"; exit 1; }
+          done
+
+      # Ejecuta los 6 checks parametrizados sobre todos los regulations/*.json:
+      #   1. Pydantic schema válido
+      #   2. Checksum SHA-256 coincide
+      #   3. regulation_id == filename stem
+      #   4. Sin solapamiento de fechas entre regulaciones
+      #   5. pokemon_legales ⊆ pokemon_master.json
+      #   6. Sanity semántico (items no vacío, last_verified <= hoy)
+      - name: Run regulation validators (6 checks)
+        run: |
+          pytest tests/test_regulations_ci.py \
+            -v --tb=short -n auto
+
+      # Envía notificación a Discord solo si el job falla.
+      # El || true evita que un error en el curl (webhook no configurado,
+      # timeout de red, etc.) haga fallar el workflow completo.
+      - name: Discord notify on failure
+        if: failure()
+        shell: bash
+        run: |
+          curl -s -H "Content-Type: application/json" \
+            -d "{\"content\": \"❌ validate-regulations FAILED\nRepo: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK_URL }}" || true
