@@ -1,0 +1,225 @@
+================================================================================
+SECCIÓN 1 — STACK PINNEADO
+================================================================================
+
+Este proyecto usa exactamente las siguientes versiones. No actualizar sin
+revisión explícita del equipo.
+
+- Python 3.12
+- Streamlit 1.56.0
+- DuckDB 1.3.2
+- Pydantic v2 (>=2.6) — usar siempre la API v2
+- DEAP 1.4.3
+- XGBoost >=2.1, <3.0
+- alibi-detect 0.12.0 con backend NUMPY (NO torch, NO tensorflow)
+- dlt[duckdb] >=1.23, <2.0
+- hdbscan >=0.8.38
+- python-louvain 0.16
+- shap >=0.46, <1.0
+- pandera >=0.20, <1.0
+
+
+================================================================================
+SECCIÓN 2 — REGLA PRINCIPAL NO NEGOCIABLE: regulation_id
+================================================================================
+
+NUNCA hardcodear regulation_id en código fuente Python.
+
+- regulation_id SIEMPRE viene de un parámetro explícito o de la función
+  get_active_regulation(). Ningún módulo debe resolverlo internamente.
+- La ÚNICA excepción permitida: archivos dentro de regulations/*.json y
+  tests/fixtures/.
+- Si un archivo .py contiene el string literal "M-A" (o cualquier otro
+  regulation_id como "M-B", "G-H", etc.), el diseño está mal.
+- Todo módulo que necesite saber la regulación activa DEBE recibirla como
+  parámetro en su firma. Nunca debe importar ni consultar la regulación
+  activa por su cuenta.
+- Esta regla aplica a funciones, clases, queries SQL embebidas en Python,
+  paths de archivos construidos en código y nombres de tablas.
+
+
+================================================================================
+SECCIÓN 3 — CONVENCIONES DE CÓDIGO PYTHON
+================================================================================
+
+SIEMPRE incluir `from __future__ import annotations` como primera línea
+de todo archivo .py (excepto __init__.py vacíos).
+
+TIPADO:
+- Tipado estricto en todas las funciones y métodos. Sin `Any` salvo casos
+  justificados con comentario explicativo.
+- Usar `TypeAlias` para aliases de tipo complejos.
+- Preferir `Sequence` sobre `list` y `Mapping` sobre `dict` en firmas
+  de funciones cuando el argumento es de solo lectura.
+
+PYDANTIC v2:
+- SIEMPRE usar model_validate() en lugar de parse_obj().
+- SIEMPRE usar model_dump() en lugar de dict().
+- NUNCA mezclar sintaxis de Pydantic v1 y v2 en el mismo módulo.
+- Usar `model_config = ConfigDict(frozen=True)` para modelos inmutables.
+
+DATACLASSES:
+- Usar `@dataclass(frozen=True)` para objetos de dominio que no cambian.
+
+LOGGING:
+- SIEMPRE usar `logging.getLogger(__name__)` para obtener el logger.
+- NUNCA usar print() en código de producción. Solo en scripts ad-hoc.
+
+MANEJO DE ERRORES:
+- NUNCA usar `except Exception` sin re-raise o log explícito del error.
+- Preferir excepciones específicas y personalizadas definidas en core/.
+- SIEMPRE loguear el contexto relevante antes de re-raise.
+
+
+================================================================================
+SECCIÓN 4 — REGLAS DE BASE DE DATOS
+================================================================================
+
+DOS MOTORES, DOS PROPÓSITOS — NUNCA mezclarlos en la misma query:
+- DuckDB → todo análisis OLAP, queries sobre archivos Parquet.
+- SQLite → exclusivamente estado mutable del usuario (selecciones, favoritos,
+  configuración persistida).
+
+PARTICIONADO:
+- SIEMPRE usar particionado estilo Hive para los datos crudos:
+  data/raw/reg={regulation_id}/source={fuente}/
+- El regulation_id en los paths NUNCA se hardcodea: se construye con
+  f-string a partir del parámetro recibido.
+
+STREAMLIT + CONEXIONES:
+- SIEMPRE usar @st.cache_resource para conexiones DuckDB y SQLite.
+- SIEMPRE usar @st.cache_data para DataFrames y objetos serializables.
+- NUNCA abrir una conexión nueva por cada llamada a una función.
+
+QUERIES:
+- NUNCA cargar un archivo Parquet completo a memoria. Siempre filtrar
+  primero con WHERE en DuckDB y traer solo las columnas necesarias.
+- Preferir leer desde Parquet vía DuckDB en lugar de pandas.read_parquet().
+
+
+================================================================================
+SECCIÓN 5 — REGLAS DE STREAMLIT
+================================================================================
+
+INICIALIZACIÓN:
+- init_session() DEBE ser la primera llamada en cada página, antes de
+  cualquier widget o query.
+
+REGULATION ID EN PÁGINAS:
+- SIEMPRE leer regulation_id desde st.session_state["selected_reg_id"].
+- NUNCA pasar regulation_id como variable global ni como constante de módulo.
+
+CACHÉ:
+- @st.cache_data para RegulationConfig (es serializable con Pydantic).
+- @st.cache_resource para modelos ML cargados y conexiones a bases de datos.
+- @st.cache_data(ttl=3600) para queries de meta actuales (usage stats, etc.).
+
+RERUNS Y CALLBACKS:
+- NUNCA llamar st.rerun() dentro de un callback on_change.
+- Para detectar cambios de valor, comparar el valor previo almacenado en
+  session_state con el nuevo valor en el flujo principal de la página.
+
+WIDGETS:
+- Asignar key= explícita a todo widget que afecte el estado de la sesión.
+- Nunca depender del orden de renderizado para inferir el estado.
+
+
+================================================================================
+SECCIÓN 6 — ESTRUCTURA DE CARPETAS Y RESPONSABILIDADES
+================================================================================
+
+src/app/core/
+  → Schemas Pydantic, modelos de dominio, lógica pura.
+  → SIN imports de Streamlit. SIN side effects. Testeable de forma aislada.
+
+src/app/utils/
+  → Gestión de sesión (init_session), conexiones DB, helpers transversales.
+  → Puede importar Streamlit para session_state y cache decorators.
+
+src/app/components/
+  → Componentes Streamlit reutilizables: sidebar, banners, cards, tablas.
+  → Reciben datos como parámetros; NO consultan la DB directamente.
+
+src/app/modules/
+  → Lógica ML, métricas, clustering, algoritmo genético, modelo WP.
+  → SIN imports de Streamlit. Reciben y devuelven objetos de dominio puros.
+
+src/app/data/scrapers/
+  → Un archivo por fuente de datos externa. Encapsulan HTTP y parsing HTML.
+
+src/app/data/pipelines/
+  → Orquestación dlt: definición de sources, resources y destinos DuckDB.
+
+src/app/data/parsers/
+  → Parsers de formatos externos: paste Showdown, replay logs, JSON externo.
+
+src/app/pages/
+  → Páginas Streamlit. Solo presentación y composición de componentes.
+  → Delegan toda lógica a modules/ y utils/.
+
+tests/
+  → Tests pytest. Un archivo test_{modulo}.py por módulo de src/.
+  → Fixtures de datos en tests/fixtures/ como archivos JSON.
+
+
+================================================================================
+SECCIÓN 7 — CONVENCIONES DE TESTS
+================================================================================
+
+ESTRUCTURA:
+- Cada módulo en src/ tiene su archivo de test en tests/test_{modulo}.py.
+- Las fixtures de regulación viven en tests/fixtures/ como JSON.
+  Son los ÚNICOS lugares donde puede aparecer un regulation_id literal.
+
+HTTP Y MOCKS:
+- NUNCA hacer llamadas HTTP reales en tests.
+- Usar httpx mock (httpx.MockTransport) o respx para mockear endpoints.
+
+PARAMETRIZACIÓN POR REGULACIÓN:
+- Todo test que involucre regulation_id DEBE ser parametrizable.
+- Si un test solo pasa con "M-A" hardcodeado en el cuerpo del test
+  (fuera de fixtures/), el test está mal escrito. Usar @pytest.mark.parametrize.
+
+FIXTURES:
+- Usar scope="session" para fixtures de datos pesados que no cambian entre tests.
+- Usar scope="function" (default) para fixtures con estado mutable.
+
+ASSERTIONS SOBRE DATAFRAMES:
+- SIEMPRE verificar: columnas esperadas presentes, DataFrame no vacío,
+  tipos de columnas correctos.
+- NUNCA comparar DataFrames enteros por igualdad exacta de valores en tests
+  de integración; verificar propiedades estructurales.
+
+
+================================================================================
+SECCIÓN 8 — LO QUE NUNCA HACER
+================================================================================
+
+DEPENDENCIAS Y BACKENDS:
+- NUNCA usar torch como backend de alibi-detect. Siempre numpy.
+- NUNCA agregar torch, tensorflow ni ninguna dependencia de deep learning
+  pesada al proyecto.
+
+ARQUITECTURA:
+- NUNCA introducir FastAPI ni Next.js hasta la versión V1.5 como mínimo.
+- NUNCA usar PostgreSQL. La base analítica es DuckDB; la de estado es SQLite.
+- NUNCA usar Airflow ni otro orquestador pesado. La automatización va en
+  GitHub Actions (.github/workflows/).
+
+STREAMLIT Y MODELOS:
+- NUNCA almacenar modelos ML en st.session_state. Usar @st.cache_resource.
+- NUNCA cargar un modelo ML más de una vez por sesión de usuario.
+
+PARSERS:
+- NUNCA reinventar parsers de replay de Pokémon Showdown. Usar librerías
+  existentes o adaptarlas desde src/app/data/parsers/.
+
+UX Y ANÁLISIS:
+- NUNCA comparar estadísticas entre regulaciones distintas sin mostrar
+  un aviso explícito al usuario indicando que la comparación es entre
+  metas diferentes.
+
+GENERAL:
+- NUNCA hacer commit de credenciales, API keys ni tokens. Usar variables
+  de entorno cargadas con python-dotenv o secretos de GitHub Actions.
+- NUNCA usar print() en módulos bajo src/. Usar logging.

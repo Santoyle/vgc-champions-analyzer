@@ -1,0 +1,60 @@
+# Entorno virtual
+.venv/
+venv/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Datos y modelos — NUNCA commitear estos
+data/raw/
+data/curated/
+data/snapshots/
+*.parquet
+*.duckdb
+*.duckdb.wal
+models/wp/*/
+models/ga/*/
+
+# Credenciales y configuración local
+.env
+.env.local
+secrets.toml
+.streamlit/secrets.toml
+
+# IDEs
+.cursor/
+.vscode/
+.idea/
+*.swp
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Testing y coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Streamlit
+.streamlit/
+
+# EXCEPCIONES — estos archivos DEBEN commitearse
+# aunque estén en carpetas ignoradas
+!data/pokemon_master.json
+!models/wp/.gitkeep
+!models/ga/.gitkeep
+!data/raw/.gitkeep
+!data/curated/.gitkeep
+!data/snapshots/.gitkeep
