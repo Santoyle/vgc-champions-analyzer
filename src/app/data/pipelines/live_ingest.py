@@ -286,18 +286,34 @@ def run_live_ingest(
     results: dict[str, bool] = {}
 
     if "pikalytics" in sources:
-        results["pikalytics"] = ingest_pikalytics(reg_id, fecha)
+        try:
+            results["pikalytics"] = ingest_pikalytics(reg_id, fecha)
+        except Exception as e:  # noqa: BLE001
+            log.error("ingest_pikalytics falló: %s", e)
+            results["pikalytics"] = False
 
     if "showdown" in sources:
-        results["showdown"] = ingest_showdown(
-            reg_id, fecha, max_replays=max_showdown_replays
-        )
+        try:
+            results["showdown"] = ingest_showdown(
+                reg_id, fecha, max_replays=max_showdown_replays
+            )
+        except Exception as e:  # noqa: BLE001
+            log.error("ingest_showdown falló: %s", e)
+            results["showdown"] = False
 
     if "limitless" in sources:
-        results["limitless"] = ingest_limitless(reg_id, fecha)
+        try:
+            results["limitless"] = ingest_limitless(reg_id, fecha)
+        except Exception as e:  # noqa: BLE001
+            log.error("ingest_limitless falló: %s", e)
+            results["limitless"] = False
 
     if "rk9" in sources:
-        results["rk9"] = ingest_rk9(reg_id, fecha)
+        try:
+            results["rk9"] = ingest_rk9(reg_id, fecha)
+        except Exception as e:  # noqa: BLE001
+            log.error("ingest_rk9 falló: %s", e)
+            results["rk9"] = False
 
     exitos = sum(1 for v in results.values() if v)
     total = len(results)
