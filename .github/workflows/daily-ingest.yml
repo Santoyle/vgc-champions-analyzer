@@ -46,7 +46,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.DATA_BOT_PAT }}
           fetch-depth: 1
 
       # ── Step 2: Python 3.12 con caché de pip ───────────────────────────
@@ -121,7 +121,7 @@ jobs:
           else
             FECHA=$(date -u +"%Y-%m-%d")
             git commit -m "data: live ingest ${FECHA} [skip ci]"
-            git push origin ${{ github.ref_name }}
+            git push https://x-access-token:${{ secrets.DATA_BOT_PAT }}@github.com/Santoyle/vgc-champions-analyzer.git main
             echo "Push exitoso"
           fi
         shell: bash
