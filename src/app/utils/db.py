@@ -20,7 +20,6 @@ import sqlite3
 from pathlib import Path
 
 import duckdb
-import streamlit as st
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +38,6 @@ _DATA_DIR = _PROJECT_ROOT / "data"
 # ---------------------------------------------------------------------------
 
 
-@st.cache_resource(show_spinner=False)
 def get_duckdb() -> duckdb.DuckDBPyConnection:
     """
     Retorna una conexión DuckDB cacheada como recurso compartido.
@@ -55,13 +53,18 @@ def get_duckdb() -> duckdb.DuckDBPyConnection:
     Returns:
         Conexión DuckDB activa en lectura/escritura.
     """
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    db_path = _DATA_DIR / "vgc.duckdb"
-    log.info("Abriendo DuckDB en %s", db_path)
-    return duckdb.connect(str(db_path))
+    import streamlit as st
+
+    @st.cache_resource(show_spinner=False)
+    def _get_duckdb_cached() -> duckdb.DuckDBPyConnection:
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        db_path = _DATA_DIR / "vgc.duckdb"
+        log.info("Abriendo DuckDB en %s", db_path)
+        return duckdb.connect(str(db_path))
+
+    return _get_duckdb_cached()
 
 
-@st.cache_resource(show_spinner=False)
 def get_sqlite() -> sqlite3.Connection:
     """
     Retorna una conexión SQLite cacheada para el estado mutable del usuario.
@@ -80,48 +83,54 @@ def get_sqlite() -> sqlite3.Connection:
     Returns:
         Conexión SQLite activa con WAL mode habilitado.
     """
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    db_path = _DATA_DIR / "app.sqlite"
-    log.info("Abriendo SQLite en %s", db_path)
+    import streamlit as st
 
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
+    @st.cache_resource(show_spinner=False)
+    def _get_sqlite_cached() -> sqlite3.Connection:
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        db_path = _DATA_DIR / "app.sqlite"
+        log.info("Abriendo SQLite en %s", db_path)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS saved_teams (
-            team_id        TEXT PRIMARY KEY,
-            name           TEXT NOT NULL,
-            regulation_id  TEXT NOT NULL,
-            paste_showdown TEXT,
-            created_at     TEXT NOT NULL,
-            notes          TEXT
-        )
-    """)
+        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_roster (
-            dex_id      INTEGER PRIMARY KEY,
-            species     TEXT NOT NULL,
-            ability     TEXT,
-            stat_points TEXT,
-            nature      TEXT,
-            moves       TEXT,
-            item        TEXT
-        )
-    """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS saved_teams (
+                team_id        TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                regulation_id  TEXT NOT NULL,
+                paste_showdown TEXT,
+                created_at     TEXT NOT NULL,
+                notes          TEXT
+            )
+        """)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_notes (
-            note_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-            entity_type TEXT NOT NULL,
-            entity_id   TEXT NOT NULL,
-            text        TEXT NOT NULL,
-            created_at  TEXT NOT NULL
-        )
-    """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_roster (
+                dex_id      INTEGER PRIMARY KEY,
+                species     TEXT NOT NULL,
+                ability     TEXT,
+                stat_points TEXT,
+                nature      TEXT,
+                moves       TEXT,
+                item        TEXT
+            )
+        """)
 
-    conn.commit()
-    return conn
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_notes (
+                note_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id   TEXT NOT NULL,
+                text        TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            )
+        """)
+
+        conn.commit()
+        return conn
+
+    return _get_sqlite_cached()
 
 
 # ---------------------------------------------------------------------------
