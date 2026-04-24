@@ -1,0 +1,654 @@
+{
+  "regulation_id": "TEST-FUTURE",
+  "game": "pokemon_champions",
+  "date_start": "2026-08-01",
+  "date_end": "2026-11-30",
+  "schema_version": "1.0.0",
+  "last_verified": "2026-04-24",
+  "checksum_sha256": "724371c1f95844f718a07adfcb77ea843f662b977f59d262ee01079ba8ea5645",
+  "transition_window_days": 7,
+  "battle_format": {
+    "team_size": 6,
+    "bring": 6,
+    "pick": 4,
+    "level_cap": 50,
+    "best_of_swiss": 1,
+    "best_of_topcut": 3,
+    "team_preview_sec": 90,
+    "turn_sec": 45,
+    "player_timer_sec": 420,
+    "game_timer_sec": 1200
+  },
+  "mechanics": {
+    "mega_enabled": true,
+    "mega_max_per_battle": 1,
+    "tera_enabled": true,
+    "z_moves_enabled": false,
+    "dynamax_enabled": false,
+    "stat_points_system": true,
+    "stat_points_total": 66,
+    "stat_points_cap_per_stat": 32,
+    "iv_system": false
+  },
+  "clauses": {
+    "species_clause": true,
+    "item_clause": true,
+    "legendary_ban": true,
+    "restricted_ban": true,
+    "open_team_list": true
+  },
+  "pokemon_legales": [
+    3,
+    6,
+    9,
+    15,
+    18,
+    24,
+    25,
+    26,
+    36,
+    38,
+    59,
+    65,
+    68,
+    71,
+    80,
+    94,
+    115,
+    121,
+    127,
+    128,
+    130,
+    132,
+    134,
+    135,
+    136,
+    142,
+    143,
+    149,
+    154,
+    157,
+    160,
+    168,
+    181,
+    184,
+    186,
+    196,
+    197,
+    199,
+    205,
+    208,
+    212,
+    214,
+    227,
+    229,
+    248,
+    279,
+    282,
+    302,
+    306,
+    308,
+    310,
+    319,
+    323,
+    324,
+    334,
+    350,
+    351,
+    354,
+    358,
+    359,
+    362,
+    389,
+    392,
+    395,
+    405,
+    407,
+    409,
+    411,
+    428,
+    442,
+    445,
+    448,
+    450,
+    454,
+    460,
+    461,
+    464,
+    470,
+    471,
+    472,
+    473,
+    475,
+    478,
+    479,
+    497,
+    500,
+    503,
+    504,
+    510,
+    512,
+    514,
+    516,
+    530,
+    531,
+    534,
+    547,
+    553,
+    563,
+    569,
+    571,
+    579,
+    584,
+    587,
+    609,
+    614,
+    618,
+    623,
+    635,
+    637,
+    652,
+    655,
+    658,
+    660,
+    663,
+    666,
+    670,
+    671,
+    675,
+    676,
+    678,
+    681,
+    683,
+    685,
+    693,
+    695,
+    697,
+    699,
+    700,
+    701,
+    702,
+    706,
+    707,
+    709,
+    711,
+    713,
+    715,
+    724,
+    727,
+    730,
+    733,
+    740,
+    745,
+    748,
+    749,
+    752,
+    758,
+    763,
+    765,
+    766,
+    778,
+    780,
+    784,
+    823,
+    841,
+    842,
+    844,
+    854,
+    858,
+    866,
+    867,
+    869,
+    877,
+    887,
+    899,
+    900,
+    902,
+    903,
+    908,
+    909,
+    914,
+    925,
+    936,
+    937,
+    939,
+    952,
+    956,
+    959,
+    962,
+    964,
+    968,
+    970,
+    981,
+    983,
+    1013,
+    1018,
+    1019
+  ],
+  "mega_evolutions_disponibles": [
+    {
+      "species": "Venusaur",
+      "mega_item": "Venusaurite",
+      "mega_ability": "Thick Fat"
+    },
+    {
+      "species": "Charizard",
+      "mega_item": "Charizardite X",
+      "mega_ability": "Tough Claws"
+    },
+    {
+      "species": "Charizard",
+      "mega_item": "Charizardite Y",
+      "mega_ability": "Drought"
+    },
+    {
+      "species": "Blastoise",
+      "mega_item": "Blastoisinite",
+      "mega_ability": "Mega Launcher"
+    },
+    {
+      "species": "Alakazam",
+      "mega_item": "Alakazite",
+      "mega_ability": "Trace"
+    },
+    {
+      "species": "Machamp",
+      "mega_item": "Machampite",
+      "mega_ability": "No Guard"
+    },
+    {
+      "species": "Gengar",
+      "mega_item": "Gengarite",
+      "mega_ability": "Shadow Tag"
+    },
+    {
+      "species": "Kangaskhan",
+      "mega_item": "Kangaskhanite",
+      "mega_ability": "Parental Bond"
+    },
+    {
+      "species": "Pinsir",
+      "mega_item": "Pinsirite",
+      "mega_ability": "Aerilate"
+    },
+    {
+      "species": "Gyarados",
+      "mega_item": "Gyaradosite",
+      "mega_ability": "Mold Breaker"
+    },
+    {
+      "species": "Aerodactyl",
+      "mega_item": "Aerodactylite",
+      "mega_ability": "Tough Claws"
+    },
+    {
+      "species": "Mewtwo",
+      "mega_item": "Mewtwonite X",
+      "mega_ability": "Steadfast"
+    },
+    {
+      "species": "Mewtwo",
+      "mega_item": "Mewtwonite Y",
+      "mega_ability": "Insomnia"
+    },
+    {
+      "species": "Ampharos",
+      "mega_item": "Ampharosite",
+      "mega_ability": "Mold Breaker"
+    },
+    {
+      "species": "Steelix",
+      "mega_item": "Steelixite",
+      "mega_ability": "Sand Force"
+    },
+    {
+      "species": "Scizor",
+      "mega_item": "Scizorite",
+      "mega_ability": "Technician"
+    },
+    {
+      "species": "Heracross",
+      "mega_item": "Heracronite",
+      "mega_ability": "Skill Link"
+    },
+    {
+      "species": "Houndoom",
+      "mega_item": "Houndoominite",
+      "mega_ability": "Solar Power"
+    },
+    {
+      "species": "Tyranitar",
+      "mega_item": "Tyranitarite",
+      "mega_ability": "Sand Stream"
+    },
+    {
+      "species": "Blaziken",
+      "mega_item": "Blazikenite",
+      "mega_ability": "Speed Boost"
+    },
+    {
+      "species": "Gardevoir",
+      "mega_item": "Gardevoirite",
+      "mega_ability": "Pixilate"
+    },
+    {
+      "species": "Mawile",
+      "mega_item": "Mawilite",
+      "mega_ability": "Huge Power"
+    },
+    {
+      "species": "Aggron",
+      "mega_item": "Aggronite",
+      "mega_ability": "Filter"
+    },
+    {
+      "species": "Medicham",
+      "mega_item": "Medichamite",
+      "mega_ability": "Pure Power"
+    },
+    {
+      "species": "Manectric",
+      "mega_item": "Manectite",
+      "mega_ability": "Intimidate"
+    },
+    {
+      "species": "Banette",
+      "mega_item": "Banettite",
+      "mega_ability": "Prankster"
+    },
+    {
+      "species": "Absol",
+      "mega_item": "Absolite",
+      "mega_ability": "Magic Bounce"
+    },
+    {
+      "species": "Garchomp",
+      "mega_item": "Garchompite",
+      "mega_ability": "Sand Force"
+    },
+    {
+      "species": "Lucario",
+      "mega_item": "Lucarionite",
+      "mega_ability": "Adaptability"
+    },
+    {
+      "species": "Abomasnow",
+      "mega_item": "Abomasite",
+      "mega_ability": "Snow Warning"
+    },
+    {
+      "species": "Gallade",
+      "mega_item": "Galladite",
+      "mega_ability": "Inner Focus"
+    },
+    {
+      "species": "Audino",
+      "mega_item": "Audinite",
+      "mega_ability": "Healer"
+    },
+    {
+      "species": "Diancie",
+      "mega_item": "Diancite",
+      "mega_ability": "Magic Bounce"
+    },
+    {
+      "species": "Meganium",
+      "mega_item": "Meganiumite",
+      "mega_ability": "Leaf Guard"
+    },
+    {
+      "species": "Typhlosion",
+      "mega_item": "Typhlosionite",
+      "mega_ability": "Flash Fire"
+    },
+    {
+      "species": "Feraligatr",
+      "mega_item": "Feraligatrite",
+      "mega_ability": "Dragonize"
+    },
+    {
+      "species": "Starmie",
+      "mega_item": "Starmite",
+      "mega_ability": "Huge Power"
+    },
+    {
+      "species": "Dragonite",
+      "mega_item": "Dragonite",
+      "mega_ability": "Multiscale"
+    },
+    {
+      "species": "Emboar",
+      "mega_item": "Emboarite",
+      "mega_ability": "Reckless"
+    },
+    {
+      "species": "Samurott",
+      "mega_item": "Samurottite",
+      "mega_ability": "Torrent"
+    },
+    {
+      "species": "Serperior",
+      "mega_item": "Serperiorite",
+      "mega_ability": "Contrary"
+    },
+    {
+      "species": "Krookodile",
+      "mega_item": "Krookodilite",
+      "mega_ability": "Intimidate"
+    },
+    {
+      "species": "Reuniclus",
+      "mega_item": "Reuniclusite",
+      "mega_ability": "Magic Guard"
+    },
+    {
+      "species": "Chandelure",
+      "mega_item": "Chandelurite",
+      "mega_ability": "Shadow Tag"
+    },
+    {
+      "species": "Haxorus",
+      "mega_item": "Haxorite",
+      "mega_ability": "Unnerve"
+    },
+    {
+      "species": "Braviary",
+      "mega_item": "Braviarite",
+      "mega_ability": "Sheer Force"
+    },
+    {
+      "species": "Hydreigon",
+      "mega_item": "Hydreigonite",
+      "mega_ability": "Levitate"
+    },
+    {
+      "species": "Chesnaught",
+      "mega_item": "Chesnaughtite",
+      "mega_ability": "Bulletproof"
+    },
+    {
+      "species": "Delphox",
+      "mega_item": "Delphoxite",
+      "mega_ability": "Magician"
+    },
+    {
+      "species": "Greninja",
+      "mega_item": "Greninjaite",
+      "mega_ability": "Protean"
+    },
+    {
+      "species": "Talonflame",
+      "mega_item": "Talonflamite",
+      "mega_ability": "Gale Wings"
+    },
+    {
+      "species": "Florges",
+      "mega_item": "Florgesite",
+      "mega_ability": "Fairy Aura"
+    },
+    {
+      "species": "Goodra",
+      "mega_item": "Goodrite",
+      "mega_ability": "Gooey"
+    },
+    {
+      "species": "Noivern",
+      "mega_item": "Noivernite",
+      "mega_ability": "Infiltrator"
+    },
+    {
+      "species": "Decidueye",
+      "mega_item": "Decideyite",
+      "mega_ability": "Long Reach"
+    },
+    {
+      "species": "Incineroar",
+      "mega_item": "Incineroarite",
+      "mega_ability": "Intimidate"
+    },
+    {
+      "species": "Primarina",
+      "mega_item": "Primarinite",
+      "mega_ability": "Liquid Voice"
+    },
+    {
+      "species": "Kommo-o",
+      "mega_item": "Kommo-oite",
+      "mega_ability": "Soundproof"
+    },
+    {
+      "species": "Cinderace",
+      "mega_item": "Cinderaceite",
+      "mega_ability": "Libero"
+    },
+    {
+      "species": "Inteleon",
+      "mega_item": "Inteleonite",
+      "mega_ability": "Sniper"
+    }
+  ],
+  "items_legales": [
+    "Sitrus Berry",
+    "Lum Berry",
+    "Aguav Berry",
+    "Figy Berry",
+    "Iapapa Berry",
+    "Mago Berry",
+    "Wiki Berry",
+    "Chesto Berry",
+    "Leppa Berry",
+    "Salac Berry",
+    "Petaya Berry",
+    "Ganlon Berry",
+    "Apicot Berry",
+    "Liechi Berry",
+    "Lansat Berry",
+    "Starf Berry",
+    "Enigma Berry",
+    "Jaboca Berry",
+    "Rowap Berry",
+    "Maranga Berry",
+    "Kee Berry",
+    "Choice Band",
+    "Choice Specs",
+    "Choice Scarf",
+    "Life Orb",
+    "Flame Orb",
+    "Toxic Orb",
+    "Eject Button",
+    "Focus Sash",
+    "Safety Goggles",
+    "Assault Vest",
+    "Rocky Helmet",
+    "Chople Berry",
+    "Occa Berry",
+    "Passho Berry",
+    "Wacan Berry",
+    "Rindo Berry",
+    "Yache Berry",
+    "Charti Berry",
+    "Kasib Berry",
+    "Haban Berry",
+    "Colbur Berry",
+    "Babiri Berry",
+    "Shuca Berry",
+    "Coba Berry",
+    "Payapa Berry",
+    "Tanga Berry",
+    "Kebia Berry",
+    "Roseli Berry",
+    "Chilan Berry",
+    "Leftovers",
+    "Black Sludge",
+    "Shell Bell",
+    "Mental Herb",
+    "White Herb",
+    "Power Herb",
+    "Red Card",
+    "Shed Shell",
+    "Terrain Extender",
+    "Heat Rock",
+    "Damp Rock",
+    "Icy Rock",
+    "Smooth Rock",
+    "Muscle Band",
+    "Wise Glasses",
+    "Expert Belt",
+    "Scope Lens",
+    "Wide Lens",
+    "King's Rock",
+    "Razor Claw",
+    "Razor Fang",
+    "Zoom Lens",
+    "Metronome",
+    "Binding Band",
+    "Loaded Dice",
+    "Eviolite",
+    "Light Clay",
+    "Bright Powder",
+    "Lax Incense",
+    "Destiny Knot",
+    "Grip Claw",
+    "Ring Target",
+    "Adrenaline Orb",
+    "Charcoal",
+    "Mystic Water",
+    "Miracle Seed",
+    "Magnet",
+    "Twisted Spoon",
+    "Never-Melt Ice",
+    "Silk Scarf",
+    "Sharp Beak",
+    "Poison Barb",
+    "Soft Sand",
+    "Hard Stone",
+    "Silver Powder",
+    "Spell Tag",
+    "Metal Coat",
+    "Dragon Fang",
+    "Black Belt",
+    "Black Glasses",
+    "Venusaurite",
+    "Charizardite X",
+    "Charizardite Y",
+    "Blastoisinite",
+    "Beedrillite",
+    "Pidgeotite",
+    "Alakazite",
+    "Slowbronite",
+    "Gengarite",
+    "Kangaskhanite",
+    "Gyaradosite",
+    "Aerodactylite",
+    "Ampharosite",
+    "Scizornite",
+    "Heracronite",
+    "Houndoominite",
+    "Tyranitarite"
+  ],
+  "moves_legales": [],
+  "abilities_legales": [],
+  "banned_moves": [],
+  "banned_abilities": [],
+  "source_urls": {}
+}
