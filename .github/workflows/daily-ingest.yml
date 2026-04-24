@@ -110,12 +110,12 @@ jobs:
       # ── Step 6: Commit y push de los datos si hay cambios ─────────────
       # [skip ci] en el mensaje es OBLIGATORIO — sin él, este push
       # dispararía validate-regulations.yml y otros workflows en cadena.
-      # git add data/raw/ || true: seguro si data/raw/ no existe aún.
+      # git add -f data/raw/ || true: -f fuerza el add aunque data/raw/ esté en .gitignore.
       - name: Commit and push ingested data
         run: |
           git config user.name "data-bot"
           git config user.email "data-bot@vgc-champions"
-          git add data/raw/ || true
+          git add -f data/raw/ || true
           if git diff --staged --quiet; then
             echo "Sin cambios en data/raw/ — nada que commitear"
           else
