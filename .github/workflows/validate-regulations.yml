@@ -87,3 +87,12 @@ jobs:
           curl -s -H "Content-Type: application/json" \
             -d "{\"content\": \"❌ validate-regulations FAILED\nRepo: ${{ github.repository }}\nBranch: ${{ github.ref_name }}\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
             "${{ secrets.DISCORD_WEBHOOK_URL }}" || true
+
+      - name: Test Discord secret is configured
+        run: |
+          if [ -z "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
+            echo "ERROR: DISCORD_WEBHOOK_URL secret is not set"
+            exit 1
+          else
+            echo "✅ DISCORD_WEBHOOK_URL secret is configured"
+          fi
