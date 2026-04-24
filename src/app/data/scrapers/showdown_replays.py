@@ -243,7 +243,7 @@ def fetch_replay_search(
         )
         return []
 
-    battles = data.get("battles", [])
+    battles = data if isinstance(data, list) else data.get("battles", [])
     if not isinstance(battles, list):
         battles = []
 
