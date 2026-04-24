@@ -251,7 +251,7 @@ def fetch_replay_search(
     for battle in battles:
         if not isinstance(battle, dict):
             continue
-        rating = int(battle.get("rating", 0))
+        rating = int(battle.get("rating") or 0)
         if rating < min_rating:
             continue
         results.append(
