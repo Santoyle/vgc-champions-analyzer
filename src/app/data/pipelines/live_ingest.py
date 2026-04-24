@@ -371,8 +371,8 @@ def main() -> int:
         max_showdown_replays=args.max_replays,
     )
 
-    fallos = sum(1 for v in results.values() if not v)
-    return 0 if fallos == 0 else 1
+    any_success = any(results.values())
+    return 0 if any_success else 1
 
 
 if __name__ == "__main__":
