@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -15,10 +16,14 @@ from src.app.data.sql.views import (
     create_usage_by_reg,
     register_raw_view,
 )
+from src.app.modules.pmi import compute_pmi_from_teammates, get_top_teammates
 from src.app.utils.db import get_duckdb, get_sqlite
 from src.app.utils.session import init_session
 
 log = logging.getLogger(__name__)
+
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+_POKEMON_MASTER_PATH = _PROJECT_ROOT / "data" / "pokemon_master.json"
 
 # ---------------------------------------------------------------------------
 # Helpers cacheados
@@ -49,18 +54,45 @@ _EMPTY_SLOT: dict[str, Any] = {
 }
 
 
+@st.cache_data(show_spinner=False)
+def load_pokemon_master() -> dict[int, str]:
+    """
+    Carga el mapeo dex_id → nombre desde data/pokemon_master.json.
+
+    Los nombres se capitalizan para display: "bulbasaur" → "Bulbasaur".
+    Usa .capitalize() (no .title()) para preservar guiones:
+    "mr-mime" → "Mr-mime" en lugar de "Mr-Mime".
+
+    Returns:
+        Dict {dex_id: nombre_capitalizado}.
+        Dict vacío si el archivo no existe o hay error.
+    """
+    try:
+        if not _POKEMON_MASTER_PATH.exists():
+            return {}
+        raw = json.loads(_POKEMON_MASTER_PATH.read_text(encoding="utf-8"))
+        pokemon_data = raw.get("pokemon", {})
+        return {
+            int(dex_id): entry["name"].capitalize()
+            for dex_id, entry in pokemon_data.items()
+            if isinstance(entry, dict) and "name" in entry
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Error cargando pokemon_master.json: %s", exc)
+        return {}
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_legal_pokemon(
     reg_id: str,
     _reg_config: RegulationConfig,
 ) -> list[str]:
     """
-    Retorna lista de nombres de Pokémon legales para el selector de la UI.
+    Retorna lista de nombres de Pokémon legales para el selector de la UI,
+    usando nombres canónicos desde pokemon_master.json.
 
-    En MVP retorna los primeros 200 por nombre ordenados alfabéticamente
-    desde pokemon_legales del RegulationConfig. Los nombres reales vienen
-    de pokemon_master.json en una tarea posterior — por ahora usa IDs
-    convertidos a string como placeholder.
+    Si un dex_id no tiene nombre en pokemon_master, usa "Pokemon #{dex_id}"
+    como fallback.
 
     Args:
         reg_id: Para clave de cache.
@@ -68,10 +100,14 @@ def load_legal_pokemon(
                      lo ignore al hashear).
 
     Returns:
-        Lista de strings con nombres de Pokémon.
+        Lista de strings con nombres capitalizados, ordenados alfabéticamente.
     """
-    dex_ids = _reg_config.pokemon_legales[:200]
-    return [f"Pokemon #{dex_id}" for dex_id in sorted(dex_ids)]
+    master = load_pokemon_master()
+    names: list[str] = [
+        master.get(dex_id, f"Pokemon #{dex_id}")
+        for dex_id in _reg_config.pokemon_legales
+    ]
+    return sorted(names)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -96,6 +132,27 @@ def load_teammates_suggestions(
         return df
     except Exception as exc:  # noqa: BLE001
         log.debug("Sin datos de teammates para %s: %s", reg_id, exc)
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_pmi_data(
+    reg_id: str,
+    _con: duckdb.DuckDBPyConnection,
+) -> pd.DataFrame:
+    """
+    Carga y cachea el DataFrame de PMI calculado.
+    Combina teammates + usage para el cálculo.
+    """
+    try:
+        register_raw_view(_con)
+        df_tm = create_teammates_by_pkm(_con, reg_id)
+        df_usage = create_usage_by_reg(_con, reg_id)
+        if df_tm.empty or df_usage.empty:
+            return pd.DataFrame()
+        return compute_pmi_from_teammates(df_tm, df_usage)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Sin datos PMI para %s: %s", reg_id, exc)
         return pd.DataFrame()
 
 
@@ -357,29 +414,39 @@ with col_info:
     st.divider()
 
     st.subheader("Sugerencias de compañeros")
-    if df_teammates.empty:
+
+    df_pmi = load_pmi_data(reg_id, con)
+
+    if df_pmi.empty:
         st.caption(f"Sin datos de co-uso disponibles para {reg_id}.")
     else:
-        selected_pokemon = next(
-            (s["species"] for s in current_slots if s.get("species")),
-            None,
-        )
+        team_pokemon = [s["species"] for s in current_slots if s.get("species")]
+        selected_pokemon = team_pokemon[0] if team_pokemon else None
+
         if selected_pokemon:
-            suggestions = df_teammates[
-                df_teammates["pokemon"] == selected_pokemon
-            ].head(5)
-            if not suggestions.empty:
-                st.caption(f"Mejores compañeros para **{selected_pokemon}**:")
-                for _, row in suggestions.iterrows():
+            suggestions = get_top_teammates(
+                df_pmi,
+                pokemon=selected_pokemon,
+                top_n=10,
+                min_ppmi=0.0,
+                exclude=team_pokemon,
+            )
+            if suggestions:
+                st.caption(
+                    f"Mejores compañeros para **{selected_pokemon}** (por PPMI):"
+                )
+                for pair in suggestions[:8]:
+                    bar_width = min(int(pair.ppmi * 20), 20)
+                    bar = "█" * bar_width
                     st.write(
-                        f"• {row['teammate']} ({row['avg_correlation']:.1f}%)"
+                        f"• **{pair.teammate}** `{bar}` {pair.co_usage_pct:.1f}%"
                     )
             else:
                 st.caption(
-                    f"Sin sugerencias para {selected_pokemon} en {reg_id}."
+                    f"Sin sugerencias PMI para {selected_pokemon} en {reg_id}."
                 )
         else:
-            st.caption("Selecciona un Pokémon para ver sugerencias.")
+            st.caption("Selecciona un Pokémon para ver sugerencias PMI.")
 
 st.divider()
 
