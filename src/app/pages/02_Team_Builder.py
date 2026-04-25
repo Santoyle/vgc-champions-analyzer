@@ -17,6 +17,10 @@ from src.app.data.sql.views import (
     register_raw_view,
 )
 from src.app.modules.pmi import compute_pmi_from_teammates, get_top_teammates
+from src.app.modules.validate import (
+    format_errors_for_ui,
+    validate_team as validate_team_module,
+)
 from src.app.utils.db import get_duckdb, get_sqlite
 from src.app.utils.session import init_session
 
@@ -166,52 +170,13 @@ def validate_team_ui(
     reg_config: RegulationConfig,
 ) -> list[str]:
     """
-    Valida el equipo actual contra las reglas de la regulación seleccionada.
-
-    Checks implementados:
-    1. Species clause: no repetir especie.
-    2. Item clause (si activa): no repetir ítem.
-    3. Max 1 Mega-capable (si mega_enabled).
-    4. Retorna lista vacía para equipo vacío — no validar lo que no existe.
-
-    Args:
-        slots: Lista de dicts con keys "species", "item", "mega_capable".
-        reg_config: Configuración de la regulación.
-
-    Returns:
-        Lista de strings de error. Vacía si el equipo es válido o vacío.
+    Wrapper UI de validate_team del módulo validate.
+    Convierte ValidationError a strings para display en Streamlit.
+    La lógica real vive en src/app/modules/validate.py — testeable
+    sin levantar la app.
     """
-    errors: list[str] = []
-    filled = [s for s in slots if s.get("species")]
-
-    if not filled:
-        return errors
-
-    # Species clause
-    species_list = [s["species"] for s in filled]
-    if len(set(species_list)) != len(species_list):
-        duplicates = [s for s in set(species_list) if species_list.count(s) > 1]
-        errors.append(f"❌ Species clause: {duplicates} aparece más de una vez.")
-
-    # Item clause
-    if reg_config.clauses.item_clause:
-        items = [s.get("item", "") for s in filled if s.get("item")]
-        if len(set(items)) != len(items):
-            dup_items = [i for i in set(items) if items.count(i) > 1]
-            errors.append(
-                f"❌ Item clause: {dup_items} aparece en más de un slot."
-            )
-
-    # Mega clause
-    if reg_config.mechanics.mega_enabled:
-        mega_count = sum(1 for s in filled if s.get("mega_capable", False))
-        if mega_count > 1:
-            errors.append(
-                f"❌ Solo puede haber 1 Pokémon con Mega Stone. "
-                f"Tienes {mega_count}."
-            )
-
-    return errors
+    errors = validate_team_module(slots, reg_config)
+    return format_errors_for_ui(errors)
 
 
 def generate_showdown_paste(slots: list[dict[str, Any]]) -> str:
@@ -285,9 +250,25 @@ st.caption(
 )
 
 if active_state != "active":
-    st.info(
-        f"📁 Construyendo equipo para regulación histórica **{reg_id}**."
+    state_messages = {
+        "transition": (
+            f"⚠️ **Transición de regulación** — "
+            f"Estás viendo **{reg_id}** durante la ventana de transición. "
+            f"Los datos pueden estar incompletos."
+        ),
+        "no_active": (
+            f"⏸️ **Sin regulación activa** — "
+            f"Estás viendo datos históricos de **{reg_id}** "
+            f"({reg_config.date_start} → {reg_config.date_end}). "
+            f"Selecciona otra regulación en el sidebar si hay una más reciente."
+        ),
+    }
+    msg = state_messages.get(
+        active_state,
+        f"📁 Regulación histórica **{reg_id}** — "
+        f"los equipos válidos en esta regulación pueden no serlo en la activa.",
     )
+    st.info(msg)
 
 # ---------------------------------------------------------------------------
 # Carga de datos
@@ -506,11 +487,70 @@ with tab_export:
     st.subheader("Exportar a paste Showdown")
     paste_output = generate_showdown_paste(st.session_state["team_slots"])
 
-    if paste_output:
-        st.code(paste_output, language="text")
-        st.caption("Copia este paste y pégalo en Pokémon Showdown.")
-    else:
+    if not paste_output:
         st.info("Completa al menos 1 slot para generar el paste.")
+    else:
+        st.code(paste_output, language="text")
+        st.caption("Copia este paste y pégalo en Pokémon Showdown o compártelo.")
+
+        st.divider()
+
+        filled_pokemon = [
+            s["species"]
+            for s in st.session_state["team_slots"]
+            if s.get("species")
+        ]
+
+        if filled_pokemon:
+            st.subheader("Contexto histórico del equipo")
+
+            with st.spinner(f"Analizando equipo en {reg_id}..."):
+                try:
+                    register_raw_view(con)
+                    df_usage = create_usage_by_reg(con, reg_id)
+                except Exception:  # noqa: BLE001
+                    df_usage = pd.DataFrame()
+
+            if df_usage.empty:
+                st.caption(f"Sin datos de uso disponibles para {reg_id}.")
+            else:
+                st.caption(
+                    f"Uso de tus Pokémon en el meta de **{reg_id}** "
+                    f"({reg_config.date_start} → {reg_config.date_end}):"
+                )
+                for pkm in filled_pokemon:
+                    match = df_usage[
+                        df_usage["pokemon"].str.lower() == pkm.lower()
+                    ]
+                    if not match.empty:
+                        usage = float(match.iloc[0]["avg_usage_pct"])
+                        n_months = int(match.iloc[0].get("n_months", 1))
+                        bar_len = min(int(usage / 2), 30)
+                        bar = "█" * bar_len
+                        tier = (
+                            "🔥 Top meta"
+                            if usage >= 30
+                            else "📊 Presente"
+                            if usage >= 10
+                            else "💡 Nicho"
+                        )
+                        st.write(
+                            f"• **{pkm}**: {usage:.1f}% `{bar}` {tier} "
+                            f"_(dato: {n_months} mes(es))_"
+                        )
+                    else:
+                        st.write(
+                            f"• **{pkm}**: sin datos en {reg_id} "
+                            f"_(puede ser nuevo en Champions)_"
+                        )
+
+                if active_state != "active":
+                    st.info(
+                        f"📁 Estos datos corresponden a **{reg_id}** "
+                        f"({reg_config.date_start} → {reg_config.date_end}), "
+                        f"una regulación histórica. "
+                        f"El meta actual puede ser muy diferente."
+                    )
 
 # ── Tab: Guardados ───────────────────────────────────────────────────────
 

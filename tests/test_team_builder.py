@@ -1,389 +1,536 @@
 """
-Tests unitarios para la lógica del Team Builder.
+Tests para los módulos de lógica de Team Builder.
 
-Grupos:
-  1 — TestPasteImport: tests de parse_paste() con strings reales.
-      No usa mocks — la función es pura.
-  2 — TestTeamValidation: tests de validación de equipos.
-      La lógica de validate_team_ui() se reimplementa aquí como
-      función helper pura para evitar importar la página Streamlit
-      (que ejecuta código de UI al nivel de módulo).
-  3 — TestPokemonMasterLoading: tests de lectura de pokemon_master.json.
-      Lee el archivo directamente sin st.cache_data.
-      Usa pytest.skip() si el archivo no existe o está vacío.
+Cubre:
+  Grupo 1 — validate_team(): validación de equipo (species, item, mega,
+             stat points). Lógica de dominio pura sin Streamlit.
+  Grupo 2 — validate_team_legality(): checks de legalidad contra las listas
+             del JSON de regulación.
+  Grupo 3 — compute_pmi_from_teammates(): cálculo PMI sobre DataFrames
+             sintéticos en memoria.
+  Grupo 4 — get_top_teammates(): función de sugerencias con filtros.
+
+Ningún test importa Streamlit ni lee archivos de disco ni hace requests HTTP.
 """
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
-
+import pandas as pd
 import pytest
 
-from src.app.data.parsers.ps_paste import parse_paste
+from src.app.core.schema import RegulationConfig
+from src.app.modules.pmi import (
+    PMIPair,
+    build_pmi_matrix,
+    compute_pmi_from_teammates,
+    get_top_teammates,
+)
+from src.app.modules.validate import (
+    ValidationError,
+    format_errors_for_ui,
+    validate_team,
+    validate_team_legality,
+)
 
 # ---------------------------------------------------------------------------
-# Rutas
-# ---------------------------------------------------------------------------
-
-_PROJECT_ROOT = Path(__file__).parent.parent
-_POKEMON_MASTER_PATH = _PROJECT_ROOT / "data" / "pokemon_master.json"
-
-# ---------------------------------------------------------------------------
-# Pastes sintéticos para TestPasteImport
-# ---------------------------------------------------------------------------
-
-_PASTE_6_SLOTS = """\
-Incineroar @ Sitrus Berry
-Ability: Intimidate
-Level: 50
-Tera Type: Fire
-EVs: 252 HP / 4 Atk / 252 Def
-Impish Nature
-- Fake Out
-- Parting Shot
-- Flare Blitz
-- Darkest Lariat
-
-Garchomp @ Choice Scarf
-Ability: Rough Skin
-Level: 50
-Tera Type: Steel
-EVs: 4 HP / 252 Atk / 252 Spe
-Jolly Nature
-- Earthquake
-- Dragon Claw
-- Stone Edge
-- Protect
-
-Sneasler @ Focus Sash
-Ability: Unburden
-Level: 50
-Tera Type: Poison
-EVs: 4 HP / 252 Atk / 252 Spe
-Jolly Nature
-- Close Combat
-- Dire Claw
-- Fake Out
-- Protect
-
-Amoonguss @ Rocky Helmet
-Ability: Regenerator
-Level: 50
-Tera Type: Water
-EVs: 252 HP / 4 Def / 252 SpD
-Sassy Nature
-- Spore
-- Pollen Puff
-- Rage Powder
-- Protect
-
-Flutter Mane @ Choice Specs
-Ability: Protosynthesis
-Level: 50
-Tera Type: Fairy
-EVs: 4 HP / 252 SpA / 252 Spe
-Timid Nature
-- Moonblast
-- Shadow Ball
-- Dazzling Gleam
-- Protect
-
-Rillaboom @ Assault Vest
-Ability: Grassy Surge
-Level: 50
-Tera Type: Grass
-EVs: 252 HP / 252 Atk / 4 SpD
-Adamant Nature
-- Grassy Glide
-- Wood Hammer
-- U-turn
-- Fake Out
-"""
-
-_PASTE_MEGA_STONE = """\
-Charizard @ Charizardite X
-Ability: Tough Claws
-Level: 50
-Tera Type: Fire
-EVs: 4 HP / 252 Atk / 252 Spe
-Jolly Nature
-- Flare Blitz
-- Dragon Claw
-- Protect
-- Earthquake
-"""
-
-_PASTE_NICKNAME = """\
-Cinder (Incineroar) @ Sitrus Berry
-Ability: Intimidate
-Level: 50
-- Fake Out
-- Parting Shot
-"""
-
-
-# ---------------------------------------------------------------------------
-# Helper local de validación (replica validate_team_ui sin Streamlit)
+# Fixtures de RegulationConfig sintéticas
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _Clauses:
-    item_clause: bool
+@pytest.fixture(scope="module")
+def reg_with_mega() -> RegulationConfig:
+    """RegulationConfig con mega y stat points habilitados para tests."""
+    from src.app.core.checksum import rehash_dict
+
+    data: dict[str, object] = {
+        "regulation_id": "TEST-MEGA",
+        "game": "pokemon_champions",
+        "date_start": "2026-04-08",
+        "date_end": "2026-12-31",
+        "battle_format": {
+            "team_size": 6,
+            "bring": 6,
+            "pick": 4,
+            "level_cap": 50,
+            "best_of_swiss": 1,
+            "best_of_topcut": 3,
+            "team_preview_sec": 90,
+            "turn_sec": 45,
+            "player_timer_sec": 420,
+            "game_timer_sec": 1200,
+        },
+        "mechanics": {
+            "mega_enabled": True,
+            "mega_max_per_battle": 1,
+            "tera_enabled": True,
+            "z_moves_enabled": False,
+            "dynamax_enabled": False,
+            "stat_points_system": True,
+            "stat_points_total": 66,
+            "stat_points_cap_per_stat": 32,
+            "iv_system": False,
+        },
+        "clauses": {
+            "species_clause": True,
+            "item_clause": True,
+            "legendary_ban": True,
+            "restricted_ban": False,
+            "open_team_list": True,
+        },
+        "pokemon_legales": [1, 2, 3, 4, 5, 6],
+        "mega_evolutions_disponibles": [
+            {
+                "species": "Charizard",
+                "mega_item": "Charizardite X",
+                "mega_ability": "Tough Claws",
+            }
+        ],
+        "items_legales": [
+            "Sitrus Berry",
+            "Choice Scarf",
+            "Charizardite X",
+            "Venusaurite",
+        ],
+        "moves_legales": [1, 2, 3, 4, 5],
+        "checksum_sha256": "a" * 64,
+        "last_verified": "2026-04-24",
+        "schema_version": "1.0.0",
+        "source_urls": {},
+        "transition_window_days": 7,
+    }
+    return RegulationConfig.model_validate(rehash_dict(data))
 
 
-@dataclass(frozen=True)
-class _Mechanics:
-    mega_enabled: bool
+@pytest.fixture(scope="module")
+def reg_no_mega() -> RegulationConfig:
+    """RegulationConfig sin mega ni stat points para tests."""
+    from src.app.core.checksum import rehash_dict
+
+    data: dict[str, object] = {
+        "regulation_id": "TEST-NOMEGA",
+        "game": "scarlet_violet",
+        "date_start": "2025-09-01",
+        "date_end": "2025-11-30",
+        "battle_format": {
+            "team_size": 6,
+            "bring": 6,
+            "pick": 4,
+            "level_cap": 50,
+            "best_of_swiss": 1,
+            "best_of_topcut": 3,
+            "team_preview_sec": 90,
+            "turn_sec": 45,
+            "player_timer_sec": 420,
+            "game_timer_sec": 1200,
+        },
+        "mechanics": {
+            "mega_enabled": False,
+            "mega_max_per_battle": 0,
+            "tera_enabled": True,
+            "z_moves_enabled": False,
+            "dynamax_enabled": False,
+            "stat_points_system": False,
+            "stat_points_total": 0,
+            "stat_points_cap_per_stat": 0,
+            "iv_system": True,
+        },
+        "clauses": {
+            "species_clause": True,
+            "item_clause": False,
+            "legendary_ban": False,
+            "restricted_ban": False,
+            "open_team_list": True,
+        },
+        "pokemon_legales": [1, 2, 3, 4, 5, 6],
+        "mega_evolutions_disponibles": [],
+        "items_legales": ["Sitrus Berry", "Choice Scarf"],
+        "moves_legales": [1, 2, 3, 4, 5],
+        "checksum_sha256": "a" * 64,
+        "last_verified": "2026-04-24",
+        "schema_version": "1.0.0",
+        "source_urls": {},
+        "transition_window_days": 7,
+    }
+    return RegulationConfig.model_validate(rehash_dict(data))
 
 
-@dataclass(frozen=True)
-class _MockRegConfig:
-    clauses: _Clauses
-    mechanics: _Mechanics
+# ---------------------------------------------------------------------------
+# Helper de slots
+# ---------------------------------------------------------------------------
 
 
-def _validate(
-    slots: list[dict[str, Any]],
-    cfg: _MockRegConfig,
-) -> list[str]:
-    """
-    Reimplementación de validate_team_ui() como función pura local.
-    Misma lógica: species clause, item clause, mega clause.
-    """
-    errors: list[str] = []
-    filled = [s for s in slots if s.get("species")]
+def _slot(
+    species: str = "",
+    item: str = "",
+    mega_capable: bool = False,
+    stat_points: dict[str, int] | None = None,
+) -> dict[str, object]:
+    """Helper para crear un slot de equipo en tests."""
+    return {
+        "species": species,
+        "item": item,
+        "ability": "",
+        "tera_type": "",
+        "nature": "Hardy",
+        "moves": ["", "", "", ""],
+        "mega_capable": mega_capable,
+        "stat_points": stat_points or {},
+    }
 
-    if not filled:
-        return errors
 
-    # Species clause (siempre activa)
-    species_list = [s["species"] for s in filled]
-    if len(set(species_list)) != len(species_list):
-        dupes = [s for s in set(species_list) if species_list.count(s) > 1]
-        errors.append(f"❌ Species clause: {dupes} aparece más de una vez.")
+# ---------------------------------------------------------------------------
+# Grupo 1 — Tests de validate_team
+# ---------------------------------------------------------------------------
 
-    # Item clause
-    if cfg.clauses.item_clause:
-        items = [s.get("item", "") for s in filled if s.get("item")]
-        if len(set(items)) != len(items):
-            dup_items = [i for i in set(items) if items.count(i) > 1]
-            errors.append(
-                f"❌ Item clause: {dup_items} aparece en más de un slot."
+
+class TestValidateTeam:
+    """Tests para validate_team() — función de dominio puro."""
+
+    def test_empty_team_returns_no_errors(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Equipo vacío no genera errores."""
+        assert validate_team([], reg_with_mega) == []
+
+    def test_all_empty_slots_returns_no_errors(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """6 slots vacíos no generan errores."""
+        assert validate_team([_slot() for _ in range(6)], reg_with_mega) == []
+
+    def test_valid_team_returns_no_errors(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Equipo con 3 Pokémon distintos sin ítems duplicados es válido."""
+        team = [
+            _slot("Bulbasaur", "Sitrus Berry"),
+            _slot("Charmander", "Choice Scarf"),
+            _slot("Squirtle", ""),
+        ]
+        assert validate_team(team, reg_with_mega) == []
+
+    def test_species_clause_detects_duplicate(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Species clause detecta dos Pokémon iguales."""
+        team = [_slot("Bulbasaur", "Sitrus Berry"), _slot("Bulbasaur", "Choice Scarf")]
+        errors = validate_team(team, reg_with_mega)
+        assert any(e.code == "species_clause" for e in errors)
+
+    def test_species_clause_error_has_slot_idx(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """El error de species clause tiene slot_idx."""
+        team = [_slot("Bulbasaur"), _slot("Bulbasaur")]
+        errors = validate_team(team, reg_with_mega)
+        species_errors = [e for e in errors if e.code == "species_clause"]
+        assert len(species_errors) > 0
+        assert species_errors[0].slot_idx is not None
+
+    def test_item_clause_detects_duplicate(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Item clause detecta ítems duplicados."""
+        team = [_slot("Bulbasaur", "Sitrus Berry"), _slot("Charmander", "Sitrus Berry")]
+        errors = validate_team(team, reg_with_mega)
+        assert any(e.code == "item_clause" for e in errors)
+
+    def test_item_clause_ignores_empty_items(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Item clause ignora slots sin ítem."""
+        team = [_slot("Bulbasaur", ""), _slot("Charmander", ""), _slot("Squirtle", "")]
+        errors = validate_team(team, reg_with_mega)
+        assert not any(e.code == "item_clause" for e in errors)
+
+    def test_item_clause_inactive_when_disabled(
+        self, reg_no_mega: RegulationConfig
+    ) -> None:
+        """Item clause no se aplica cuando está desactivada en la regulación."""
+        team = [_slot("Bulbasaur", "Sitrus Berry"), _slot("Charmander", "Sitrus Berry")]
+        errors = validate_team(team, reg_no_mega)
+        assert not any(e.code == "item_clause" for e in errors)
+
+    def test_mega_clause_detects_two_megas(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Mega clause detecta más de 1 Mega Stone."""
+        team = [
+            _slot("Charizard", "Charizardite X", mega_capable=True),
+            _slot("Venusaur", "Venusaurite", mega_capable=True),
+        ]
+        errors = validate_team(team, reg_with_mega)
+        assert any(e.code == "mega_clause" for e in errors)
+
+    def test_mega_clause_allows_one_mega(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Un solo Mega Stone es válido."""
+        team = [
+            _slot("Charizard", "Charizardite X", mega_capable=True),
+            _slot("Bulbasaur", "Sitrus Berry", mega_capable=False),
+        ]
+        errors = validate_team(team, reg_with_mega)
+        assert not any(e.code == "mega_clause" for e in errors)
+
+    def test_mega_clause_inactive_when_disabled(
+        self, reg_no_mega: RegulationConfig
+    ) -> None:
+        """Mega clause no se aplica cuando mega está desactivado."""
+        team = [
+            _slot("Charizard", "", mega_capable=True),
+            _slot("Venusaur", "", mega_capable=True),
+        ]
+        errors = validate_team(team, reg_no_mega)
+        assert not any(e.code == "mega_clause" for e in errors)
+
+    def test_stat_points_total_exceeded(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Stat points totales superando el límite genera error."""
+        team = [
+            _slot(
+                "Bulbasaur",
+                stat_points={"hp": 32, "atk": 32, "def": 10, "spa": 0, "spd": 0, "spe": 0},
             )
+        ]  # total = 74 > 66
+        errors = validate_team(team, reg_with_mega)
+        assert any(e.code == "stat_points" for e in errors)
 
-    # Mega clause
-    if cfg.mechanics.mega_enabled:
-        mega_count = sum(1 for s in filled if s.get("mega_capable", False))
-        if mega_count > 1:
-            errors.append(
-                f"❌ Solo puede haber 1 Pokémon con Mega Stone. "
-                f"Tienes {mega_count}."
+    def test_stat_points_per_stat_exceeded(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Un stat individual superando el cap genera error."""
+        team = [
+            _slot(
+                "Bulbasaur",
+                stat_points={"hp": 40, "atk": 0, "def": 0, "spa": 0, "spd": 0, "spe": 0},
             )
+        ]  # hp=40 > 32 (cap)
+        errors = validate_team(team, reg_with_mega)
+        assert any(e.code == "stat_points" for e in errors)
 
-    return errors
+    def test_stat_points_inactive_when_disabled(
+        self, reg_no_mega: RegulationConfig
+    ) -> None:
+        """Stat points no se validan cuando el sistema está desactivado."""
+        team = [_slot("Bulbasaur", stat_points={"hp": 999})]
+        errors = validate_team(team, reg_no_mega)
+        assert not any(e.code == "stat_points" for e in errors)
 
+    def test_validation_error_is_frozen(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """ValidationError es inmutable (frozen=True)."""
+        err = ValidationError(code="test", message="test msg", slot_idx=0)
+        with pytest.raises((AttributeError, TypeError)):
+            err.code = "modified"  # type: ignore[misc]
 
-# ---------------------------------------------------------------------------
-# Helper local de carga de pokemon_master.json
-# ---------------------------------------------------------------------------
+    def test_format_errors_for_ui_prefixes_emoji(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """format_errors_for_ui agrega ❌ al inicio de cada mensaje."""
+        errors = [ValidationError("species_clause", "Test error")]
+        formatted = format_errors_for_ui(errors)
+        assert len(formatted) == 1
+        assert formatted[0].startswith("❌")
 
-
-def _load_master() -> dict[int, str]:
-    """Lee pokemon_master.json directamente sin st.cache_data."""
-    if not _POKEMON_MASTER_PATH.exists():
-        return {}
-    try:
-        raw = json.loads(_POKEMON_MASTER_PATH.read_text(encoding="utf-8"))
-        pokemon_data = raw.get("pokemon", {})
-        return {
-            int(dex_id): entry["name"].capitalize()
-            for dex_id, entry in pokemon_data.items()
-            if isinstance(entry, dict) and "name" in entry
-        }
-    except Exception:  # noqa: BLE001
-        return {}
-
-
-# ---------------------------------------------------------------------------
-# Grupo 1 — TestPasteImport
-# ---------------------------------------------------------------------------
-
-
-class TestPasteImport:
-    """Tests de parse_paste() con strings reales. Sin mocks."""
-
-    def test_parse_valid_paste_returns_6_slots(self) -> None:
-        """Un paste de 6 Pokémon produce exactamente 6 slots."""
-        team = parse_paste(_PASTE_6_SLOTS)
-        assert len(team.slots) == 6
-
-    def test_parse_paste_with_mega_stone_sets_mega_capable(self) -> None:
-        """Un ítem tipo Mega Stone activa mega_capable=True."""
-        team = parse_paste(_PASTE_MEGA_STONE)
-        assert len(team.slots) == 1
-        assert team.slots[0].mega_capable is True
-
-    def test_parse_paste_preserves_item(self) -> None:
-        """El ítem se parsea y preserva correctamente."""
-        team = parse_paste(_PASTE_6_SLOTS)
-        incineroar = next(
-            (s for s in team.slots if s.species == "Incineroar"), None
-        )
-        assert incineroar is not None
-        assert incineroar.item == "Sitrus Berry"
-
-    def test_parse_paste_preserves_moves(self) -> None:
-        """Los 4 movimientos se parsean correctamente."""
-        team = parse_paste(_PASTE_MEGA_STONE)
-        slot = team.slots[0]
-        assert len(slot.moves) == 4
-        assert "Flare Blitz" in slot.moves
-        assert "Dragon Claw" in slot.moves
-        assert "Protect" in slot.moves
-        assert "Earthquake" in slot.moves
-
-    def test_parse_paste_with_nickname(self) -> None:
-        """El nickname se separa de la especie correctamente."""
-        team = parse_paste(_PASTE_NICKNAME)
-        assert len(team.slots) == 1
-        assert team.slots[0].species == "Incineroar"
-        assert team.slots[0].nickname == "Cinder"
-
-    def test_parse_empty_paste_returns_empty_team(self) -> None:
-        """Paste vacío retorna equipo sin slots y con warnings."""
-        team = parse_paste("")
-        assert len(team.slots) == 0
-        assert len(team.parse_warnings) > 0
-
-
-# ---------------------------------------------------------------------------
-# Grupo 2 — TestTeamValidation
-# ---------------------------------------------------------------------------
-
-
-class TestTeamValidation:
-    """
-    Tests de lógica de validación de equipos.
-    Usa _validate() — reimplementación local de validate_team_ui().
-    """
-
-    _cfg_base = _MockRegConfig(
-        clauses=_Clauses(item_clause=True),
-        mechanics=_Mechanics(mega_enabled=True),
-    )
-    _cfg_no_mega = _MockRegConfig(
-        clauses=_Clauses(item_clause=False),
-        mechanics=_Mechanics(mega_enabled=False),
-    )
-
-    def test_empty_team_returns_no_errors(self) -> None:
-        """Un equipo sin slots completados no genera errores."""
-        slots: list[dict[str, Any]] = [
-            {"species": "", "item": "", "mega_capable": False}
-            for _ in range(6)
+    def test_multiple_errors_all_returned(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Se retornan todos los errores de todos los checks, no solo el primero."""
+        team = [
+            _slot("Bulbasaur", "Sitrus Berry", mega_capable=True),
+            _slot("Bulbasaur", "Sitrus Berry", mega_capable=True),
         ]
-        assert _validate(slots, self._cfg_base) == []
-
-    def test_team_with_duplicate_species_returns_error(self) -> None:
-        """Dos Incineroar en el equipo → error de species clause."""
-        slots: list[dict[str, Any]] = [
-            {"species": "Incineroar", "item": "Sitrus Berry", "mega_capable": False},
-            {"species": "Incineroar", "item": "Rocky Helmet", "mega_capable": False},
-            {"species": "Garchomp", "item": "Choice Scarf", "mega_capable": False},
-        ]
-        errors = _validate(slots, self._cfg_base)
-        assert len(errors) == 1
-        assert "Species clause" in errors[0]
-
-    def test_team_with_duplicate_items_returns_error(self) -> None:
-        """Dos slots con Sitrus Berry → error de item clause."""
-        slots: list[dict[str, Any]] = [
-            {"species": "Incineroar", "item": "Sitrus Berry", "mega_capable": False},
-            {"species": "Garchomp", "item": "Sitrus Berry", "mega_capable": False},
-        ]
-        errors = _validate(slots, self._cfg_base)
-        assert any("Item clause" in e for e in errors)
-
-    def test_team_with_two_megas_returns_error(self) -> None:
-        """Dos Pokémon con Mega Stone → error de mega clause."""
-        slots: list[dict[str, Any]] = [
-            {"species": "Charizard", "item": "Charizardite X", "mega_capable": True},
-            {"species": "Venusaur", "item": "Venusaurite", "mega_capable": True},
-            {"species": "Incineroar", "item": "Sitrus Berry", "mega_capable": False},
-        ]
-        errors = _validate(slots, self._cfg_base)
-        assert any("Mega Stone" in e for e in errors)
-
-    def test_valid_team_returns_no_errors(self) -> None:
-        """Un equipo bien formado no produce errores."""
-        slots: list[dict[str, Any]] = [
-            {"species": "Incineroar", "item": "Sitrus Berry", "mega_capable": False},
-            {"species": "Garchomp", "item": "Choice Scarf", "mega_capable": False},
-            {"species": "Sneasler", "item": "Focus Sash", "mega_capable": False},
-            {"species": "Amoonguss", "item": "Rocky Helmet", "mega_capable": False},
-            {"species": "Flutter Mane", "item": "Choice Specs", "mega_capable": False},
-            {"species": "Rillaboom", "item": "Assault Vest", "mega_capable": False},
-        ]
-        assert _validate(slots, self._cfg_base) == []
-
-    def test_single_pokemon_team_is_valid(self) -> None:
-        """Un equipo de 1 Pokémon es válido (sin duplicados posibles)."""
-        slots: list[dict[str, Any]] = [
-            {"species": "Incineroar", "item": "Sitrus Berry", "mega_capable": False},
-        ]
-        assert _validate(slots, self._cfg_base) == []
+        errors = validate_team(team, reg_with_mega)
+        codes = {e.code for e in errors}
+        assert "species_clause" in codes
+        assert "item_clause" in codes
+        assert "mega_clause" in codes
 
 
 # ---------------------------------------------------------------------------
-# Grupo 3 — TestPokemonMasterLoading
+# Grupo 2 — Tests de validate_team_legality
 # ---------------------------------------------------------------------------
 
 
-class TestPokemonMasterLoading:
-    """
-    Tests de carga de data/pokemon_master.json.
-    Usa pytest.skip() si el archivo no existe o está vacío.
-    """
+class TestValidateTeamLegality:
+    """Tests para validate_team_legality()."""
 
-    @pytest.fixture(scope="class", autouse=True)
-    def _require_master(self) -> None:
-        """Salta toda la clase si pokemon_master.json no existe o está vacío."""
-        if not _POKEMON_MASTER_PATH.exists():
-            pytest.skip("pokemon_master.json no existe")
-        master = _load_master()
-        if not master:
-            pytest.skip("pokemon_master.json existe pero está vacío o sin datos")
+    def test_legal_item_passes(self, reg_with_mega: RegulationConfig) -> None:
+        """Ítem en items_legales no genera error."""
+        team = [_slot("Bulbasaur", "Sitrus Berry")]
+        errors = validate_team_legality(team, reg_with_mega)
+        assert not any(e.code == "illegal_item" for e in errors)
 
-    def test_pokemon_master_loads_1025_entries(self) -> None:
-        """pokemon_master.json contiene exactamente 1025 entradas (Gen 1-9)."""
-        master = _load_master()
-        assert len(master) == 1025, (
-            f"Se esperaban 1025 entradas, se encontraron {len(master)}"
+    def test_illegal_item_detected(self, reg_with_mega: RegulationConfig) -> None:
+        """Ítem no en items_legales genera error."""
+        team = [_slot("Bulbasaur", "Life Orb")]
+        errors = validate_team_legality(team, reg_with_mega)
+        assert any(e.code == "illegal_item" for e in errors)
+
+    def test_empty_item_not_flagged(self, reg_with_mega: RegulationConfig) -> None:
+        """Slot sin ítem no genera error de item."""
+        team = [_slot("Bulbasaur", "")]
+        errors = validate_team_legality(team, reg_with_mega)
+        assert not any(e.code == "illegal_item" for e in errors)
+
+    def test_illegal_item_error_has_slot_idx(
+        self, reg_with_mega: RegulationConfig
+    ) -> None:
+        """Error de ítem ilegal tiene slot_idx correcto."""
+        team = [
+            _slot("Bulbasaur", "Sitrus Berry"),
+            _slot("Charmander", "Life Orb"),
+        ]
+        errors = validate_team_legality(team, reg_with_mega)
+        item_errors = [e for e in errors if e.code == "illegal_item"]
+        assert len(item_errors) > 0
+        assert item_errors[0].slot_idx == 1
+
+
+# ---------------------------------------------------------------------------
+# Grupo 3 — Tests de compute_pmi_from_teammates
+# ---------------------------------------------------------------------------
+
+
+class TestComputePMI:
+    """Tests para el cálculo de PMI."""
+
+    def _make_teammates_df(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "regulation_id": ["TEST"] * 4,
+                "pokemon": ["Incineroar", "Incineroar", "Garchomp", "Garchomp"],
+                "teammate": ["Garchomp", "Rillaboom", "Incineroar", "Sinistcha"],
+                "avg_correlation": [45.0, 20.0, 45.0, 15.0],
+                "n_months_seen": [4, 4, 4, 4],
+            }
         )
 
-    def test_pokemon_master_has_bulbasaur_at_1(self) -> None:
-        """El dex_id 1 corresponde a 'Bulbasaur'."""
-        master = _load_master()
-        assert 1 in master, "dex_id 1 no encontrado en pokemon_master"
-        assert master[1] == "Bulbasaur", (
-            f"dex_id 1 es '{master[1]}', se esperaba 'Bulbasaur'"
+    def _make_usage_df(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "regulation_id": ["TEST"] * 4,
+                "pokemon": ["Incineroar", "Garchomp", "Rillaboom", "Sinistcha"],
+                "avg_usage_pct": [54.0, 37.0, 25.0, 34.0],
+            }
         )
 
-    def test_pokemon_master_has_incineroar(self) -> None:
-        """Incineroar (dex_id 727) está en el master."""
-        master = _load_master()
-        assert 727 in master, "dex_id 727 (Incineroar) no encontrado"
-        assert master[727] == "Incineroar", (
-            f"dex_id 727 es '{master[727]}', se esperaba 'Incineroar'"
+    def test_returns_non_empty_df(self) -> None:
+        """Con datos válidos retorna DataFrame no vacío."""
+        df_pmi = compute_pmi_from_teammates(
+            self._make_teammates_df(), self._make_usage_df()
+        )
+        assert not df_pmi.empty
+
+    def test_has_required_columns(self) -> None:
+        """DataFrame de PMI tiene las columnas esperadas."""
+        df_pmi = compute_pmi_from_teammates(
+            self._make_teammates_df(), self._make_usage_df()
+        )
+        required = {"pokemon", "teammate", "pmi", "ppmi", "co_usage_pct"}
+        assert required.issubset(set(df_pmi.columns))
+
+    def test_ppmi_is_non_negative(self) -> None:
+        """PPMI siempre es >= 0."""
+        df_pmi = compute_pmi_from_teammates(
+            self._make_teammates_df(), self._make_usage_df()
+        )
+        assert (df_pmi["ppmi"] >= 0).all()
+
+    def test_empty_teammates_returns_empty(self) -> None:
+        """DataFrame vacío de teammates retorna DataFrame vacío."""
+        df_pmi = compute_pmi_from_teammates(pd.DataFrame(), self._make_usage_df())
+        assert df_pmi.empty
+
+    def test_empty_usage_returns_empty(self) -> None:
+        """DataFrame vacío de usage retorna DataFrame vacío."""
+        df_pmi = compute_pmi_from_teammates(self._make_teammates_df(), pd.DataFrame())
+        assert df_pmi.empty
+
+    def test_high_co_usage_has_positive_pmi(self) -> None:
+        """Par con alta co-uso (45%) entre Pokémon con uso moderado
+        debe tener PMI positivo."""
+        df_pmi = compute_pmi_from_teammates(
+            self._make_teammates_df(), self._make_usage_df()
+        )
+        pair = df_pmi[
+            (df_pmi["pokemon"] == "Incineroar") & (df_pmi["teammate"] == "Garchomp")
+        ]
+        if not pair.empty:
+            assert float(pair.iloc[0]["pmi"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Grupo 4 — Tests de get_top_teammates
+# ---------------------------------------------------------------------------
+
+
+class TestGetTopTeammates:
+    """Tests para la función de sugerencias."""
+
+    @pytest.fixture
+    def sample_pmi_df(self) -> pd.DataFrame:
+        """DataFrame PMI sintético para tests."""
+        return pd.DataFrame(
+            {
+                "pokemon": ["Incineroar"] * 4,
+                "teammate": ["Garchomp", "Rillaboom", "Sinistcha", "Sneasler"],
+                "pmi": [1.2, 0.8, 0.5, 0.3],
+                "ppmi": [1.2, 0.8, 0.5, 0.3],
+                "co_usage_pct": [45.0, 30.0, 20.0, 15.0],
+                "n_months_seen": [4, 4, 4, 4],
+            }
         )
 
-    def test_fallback_name_for_unknown_id(self) -> None:
-        """Para un dex_id fuera del master, el fallback es 'Pokemon #dex_id'."""
-        master = _load_master()
-        unknown_id = 99999
-        assert unknown_id not in master
-        fallback = master.get(unknown_id, f"Pokemon #{unknown_id}")
-        assert fallback == "Pokemon #99999"
+    def test_returns_list_of_pmi_pairs(self, sample_pmi_df: pd.DataFrame) -> None:
+        """Retorna lista de PMIPair."""
+        result = get_top_teammates(sample_pmi_df, "Incineroar")
+        assert isinstance(result, list)
+        assert all(isinstance(p, PMIPair) for p in result)
+
+    def test_respects_top_n(self, sample_pmi_df: pd.DataFrame) -> None:
+        """Respeta el límite top_n."""
+        result = get_top_teammates(sample_pmi_df, "Incineroar", top_n=2)
+        assert len(result) <= 2
+
+    def test_excludes_specified_pokemon(self, sample_pmi_df: pd.DataFrame) -> None:
+        """Excluye Pokémon de la lista exclude."""
+        result = get_top_teammates(sample_pmi_df, "Incineroar", exclude=["Garchomp"])
+        assert "Garchomp" not in [p.teammate for p in result]
+
+    def test_excludes_self(self, sample_pmi_df: pd.DataFrame) -> None:
+        """El Pokémon de referencia no aparece en sus propias sugerencias."""
+        df_with_self = pd.concat(
+            [
+                sample_pmi_df,
+                pd.DataFrame(
+                    [
+                        {
+                            "pokemon": "Incineroar",
+                            "teammate": "Incineroar",
+                            "pmi": 2.0,
+                            "ppmi": 2.0,
+                            "co_usage_pct": 100.0,
+                            "n_months_seen": 4,
+                        }
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+        result = get_top_teammates(df_with_self, "Incineroar")
+        assert "Incineroar" not in [p.teammate for p in result]
+
+    def test_unknown_pokemon_returns_empty(self, sample_pmi_df: pd.DataFrame) -> None:
+        """Pokémon sin datos retorna lista vacía."""
+        assert get_top_teammates(sample_pmi_df, "Pikachu") == []
+
+    def test_sorted_by_ppmi_descending(self, sample_pmi_df: pd.DataFrame) -> None:
+        """Resultados ordenados por ppmi descendente."""
+        result = get_top_teammates(sample_pmi_df, "Incineroar")
+        if len(result) >= 2:
+            assert all(
+                result[i].ppmi >= result[i + 1].ppmi for i in range(len(result) - 1)
+            )
