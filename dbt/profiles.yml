@@ -1,0 +1,10 @@
+vgc_champions:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', ':memory:') }}"
+      extensions:
+        - parquet
+      settings:
+        threads: 4

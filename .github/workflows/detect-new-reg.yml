@@ -1,0 +1,227 @@
+name: Detect new regulation
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  detect:
+    name: Check for new regulation format
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install detector dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "httpx>=0.27" "pydantic>=2.6"
+
+      - name: Run new regulation detector
+        run: |
+          python -c "
+          import logging
+          import os
+          import sys
+
+          sys.path.insert(0, '.')
+          logging.basicConfig(
+              level=logging.INFO,
+              format='%(asctime)s %(levelname)s: %(message)s',
+          )
+
+          from src.app.modules.new_reg_detector import (
+              detect_new_regulation,
+              format_detection_for_discord,
+          )
+
+          detections = detect_new_regulation()
+
+          gh_env_file = os.environ.get('GITHUB_ENV')
+          line = (
+              ('NEW_REG_SLUG=' + detections[0].format_slug + '\n')
+              if detections
+              else 'NEW_REG_SLUG=\n'
+          )
+          if gh_env_file:
+              with open(gh_env_file, 'a', encoding='utf-8') as fh:
+                  fh.write(line)
+
+          if not detections:
+              print('✅ No hay nuevas regulaciones — meta estable')
+              raise SystemExit(0)
+
+          for det in detections:
+              print(format_detection_for_discord(det))
+
+          raise SystemExit(0)
+          "
+        shell: bash
+
+      - name: Create draft PR if new regulation detected
+        if: env.NEW_REG_SLUG != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_REG_SLUG: ${{ env.NEW_REG_SLUG }}
+        run: |
+          SLUG="${NEW_REG_SLUG}"
+          if [ -z "$SLUG" ]; then
+            echo "Sin nueva regulación detectada"
+            exit 0
+          fi
+
+          REG_ID=$(python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from scripts.create_reg_draft import _get_next_regulation_id
+          print(_get_next_regulation_id('$SLUG'))
+          ")
+
+          echo "Nueva regulación: ${REG_ID} (${SLUG})"
+
+          if [ -f "regulations/${REG_ID}.json" ]; then
+            echo "regulations/${REG_ID}.json ya existe — saltando"
+            exit 0
+          fi
+
+          BRANCH="bot/new-reg-${SLUG}"
+          git config user.name "new-reg-bot"
+          git config user.email "new-reg-bot@vgc-champions"
+          git checkout -b "${BRANCH}"
+
+          python scripts/create_reg_draft.py \
+            --slug "${SLUG}" \
+            --reg-id "${REG_ID}"
+
+          git add "regulations/${REG_ID}.json"
+          git commit -m "bot: draft regulation ${REG_ID} (${SLUG}) — needs pokemon_legales and dates"
+
+          git push origin "${BRANCH}"
+
+          PR_BODY_FILE="${RUNNER_TEMP}/pr_body.md"
+          {
+            echo "## Nueva regulación detectada automáticamente"
+            echo ""
+            echo "**Format slug:** \`${SLUG}\`"
+            echo "**regulation_id propuesto:** \`${REG_ID}\`"
+            echo ""
+            echo "### ✅ Checklist antes de mergear"
+            echo ""
+            echo "- [ ] Rellenar \`pokemon_legales\` con los Pokémon legales oficiales"
+            echo "- [ ] Actualizar \`date_start\` con la fecha de inicio oficial"
+            echo "- [ ] Actualizar \`date_end\` con la fecha de fin oficial"
+            echo "- [ ] Rellenar \`items_legales\` si hay restricciones"
+            echo "- [ ] Verificar que \`mechanics\` refleja las reglas actuales"
+            echo "- [ ] Eliminar el campo \`_draft_notes\`"
+            echo "- [ ] Ejecutar: \`python scripts/rehash.py regulations/${REG_ID}.json\`"
+            echo "- [ ] Confirmar que pytest tests/test_regulations_ci.py pasa"
+            echo ""
+            echo "### 🔍 Fuentes para completar el JSON"
+            echo ""
+            echo "- [Play! Pokémon rules](https://www.pokemon.com/us/play-pokemon/official-events/formats/)"
+            echo "- [Smogon VGC thread](https://www.smogon.com/forums/forums/vgc.268/)"
+            echo "- [Limitless TCG](https://limitlesstcg.com)"
+            echo ""
+            echo "---"
+            echo "*PR generado automáticamente por detect-new-reg.yml*"
+          } > "${PR_BODY_FILE}"
+
+          PR_URL=$(gh pr create \
+            --title "🆕 Nueva regulación detectada: ${REG_ID}" \
+            --body-file "${PR_BODY_FILE}" \
+            --head "${BRANCH}" \
+            --base main \
+            --draft) || true
+          echo "PR_URL=${PR_URL}" >> "$GITHUB_ENV"
+          echo "PR creado: ${PR_URL}"
+        shell: bash
+
+      - name: Discord notify when new regulation detected
+        if: env.NEW_REG_SLUG != ''
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PR_URL: ${{ env.PR_URL }}
+        run: |
+          python -c "
+          import json
+          import logging
+          import os
+          import sys
+          import urllib.request
+
+          sys.path.insert(0, '.')
+          logging.basicConfig(
+              level=logging.INFO,
+              format='%(asctime)s %(levelname)s: %(message)s',
+          )
+
+          from src.app.modules.new_reg_detector import (
+              detect_new_regulation,
+              format_detection_for_discord,
+          )
+
+          detections = detect_new_regulation()
+          if not detections:
+              raise SystemExit(0)
+
+          webhook_url = os.environ.get('DISCORD_WEBHOOK_URL', '')
+          pr_url = os.environ.get('PR_URL', '')
+          pr_line = f'\n• PR draft: {pr_url}' if pr_url else ''
+          run_url = (
+              'https://github.com/'
+              + os.environ.get('GITHUB_REPOSITORY', '')
+              + '/actions/runs/'
+              + os.environ.get('GITHUB_RUN_ID', '')
+          )
+
+          for det in detections:
+              msg = format_detection_for_discord(det)
+              print(msg)
+              if webhook_url:
+                  payload = {
+                      'content': msg + pr_line + f'\n• Run: {run_url}'
+                  }
+                  data = json.dumps(payload).encode('utf-8')
+                  req = urllib.request.Request(
+                      webhook_url,
+                      data=data,
+                      headers={'Content-Type': 'application/json'},
+                      method='POST',
+                  )
+                  try:
+                      with urllib.request.urlopen(req) as resp:
+                          print(f'Discord notificado: {resp.status}')
+                  except Exception as e:
+                      print(f'Error notificando Discord: {e}')
+
+          raise SystemExit(0)
+          "
+        shell: bash
+
+      - name: Discord notify on workflow failure
+        if: failure()
+        run: |
+          curl -s \
+            -H "Content-Type: application/json" \
+            -d "{\"content\": \"❌ detect-new-reg FAILED\nRepo: ${{ github.repository }}\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK_URL }}" || true
+        shell: bash

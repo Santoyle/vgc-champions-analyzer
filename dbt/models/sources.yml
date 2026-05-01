@@ -1,0 +1,10 @@
+version: 2
+
+sources:
+  - name: raw
+    description: "Parquets crudos del pipeline LIVE"
+    tables:
+      - name: usage
+        description: "Vista raw_usage sobre todos los Parquets"
+        meta:
+          parquet_glob: "data/raw/**/*.parquet"
