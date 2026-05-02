@@ -160,6 +160,50 @@ def _normalize_slug(name: str) -> str:
     return name.lower().replace(" ", "-")
 
 
+def _winner_key_from_showdown_log(lines: list[str]) -> str:
+    """
+    Deriva ``p1`` / ``p2`` / ``""`` desde ``|player|`` y ``|win|``.
+
+    Compara el username de ``|win|...`` con los de ``|player|p1|`` y
+    ``|player|p2|``. Si no coincide (empate u otro caso), retorna ``""``.
+    """
+    p1_user: str | None = None
+    p2_user: str | None = None
+    win_user: str | None = None
+
+    for raw in lines:
+        line = raw.strip()
+        if not line.startswith("|"):
+            continue
+        parts = line.split("|")
+        if len(parts) < 3:
+            continue
+        event = parts[1].lower()
+        if event == "player" and len(parts) >= 4:
+            side = parts[2].lower()
+            name = parts[3].strip()
+            if not name:
+                continue
+            if side == "p1":
+                p1_user = name
+            elif side == "p2":
+                p2_user = name
+        elif event == "win" and len(parts) >= 3:
+            w = parts[2].strip()
+            if w:
+                win_user = w
+
+    if not win_user:
+        return ""
+
+    wcf = win_user.casefold()
+    if p1_user is not None and wcf == p1_user.casefold():
+        return "p1"
+    if p2_user is not None and wcf == p2_user.casefold():
+        return "p2"
+    return ""
+
+
 def parse_replay_log(
     replay_id: str,
     regulation_id: str,
@@ -189,6 +233,7 @@ def parse_replay_log(
         return []
 
     lines = raw_log.strip().split("\n")
+    winner_key = _winner_key_from_showdown_log(lines)
     state = GameState()
     rows: list[dict[str, Any]] = []
     action_idx = 0
@@ -233,7 +278,7 @@ def parse_replay_log(
             "mega_used_p1": state.mega_used_p1,
             "mega_used_p2": state.mega_used_p2,
             "ko_diff": state.ko_diff,
-            "winner": winner or "",
+            "winner": winner_key,
         }
         action_idx += 1
         return row
