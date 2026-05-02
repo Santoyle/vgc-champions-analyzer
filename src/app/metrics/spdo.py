@@ -68,6 +68,38 @@ class DefensiveOptResult:
     found: bool
 
 
+@dataclass
+class OffensiveOptResult:
+    """
+    Resultado de la optimización ofensiva SPDO
+    Modo 3.
+
+    Attributes:
+        min_atk_sp: SP mínimos en Atk (o SpA)
+                     para alcanzar el target de KO.
+        ko_prob_achieved: Probabilidad de KO lograda.
+        ko_prob_target: Probabilidad objetivo.
+        stat_used: "atk" o "spa".
+        atk_stat_value: Valor del stat ofensivo con
+                         min_atk_sp SP asignados.
+        pokemon: Nombre del atacante.
+        move_name: Nombre del move.
+        n_target_spreads: Número de spreads del
+                           defensor usados.
+        found: True si se encontró solución.
+    """
+
+    min_atk_sp: int
+    ko_prob_achieved: float
+    ko_prob_target: float
+    stat_used: str
+    atk_stat_value: int
+    pokemon: str
+    move_name: str
+    n_target_spreads: int
+    found: bool
+
+
 def optimize_defensive_sp(
     reg_id: str,
     pokemon_slug: str,
@@ -338,7 +370,284 @@ def optimize_defensive_sp(
     return best
 
 
+def optimize_offensive_sp(
+    reg_id: str,
+    pokemon_slug: str,
+    attacker_move: dict[str, Any],
+    attacker_nature: str,
+    attacker_item: str | None = None,
+    attacker_fixed_spread: SPSpread | None = None,
+    target_spreads: list[dict[str, Any]] | None = None,
+    ko_probability_target: float = 0.90,
+    field: dict[str, Any] | None = None,
+    pokemon_master: dict[int, dict[str, Any]] | None = None,
+) -> OffensiveOptResult | None:
+    """
+    Encuentra el SP mínimo en Atk (o SpA) para
+    garantizar OHKO al defensor con probabilidad
+    >= ko_probability_target.
+
+    El defensor se representa como una distribución
+    de spreads (target_spreads) con sus porcentajes
+    de uso del meta. Si target_spreads está vacío,
+    usa el spread 0/0/0/0/0/0 como target único.
+
+    Args:
+        reg_id: Regulación (para futuro uso con DB).
+        pokemon_slug: Atacante a optimizar.
+        attacker_move: Dict con power, type,
+                       category, name.
+        attacker_nature: Naturaleza del atacante.
+        attacker_item: Ítem del atacante.
+        attacker_fixed_spread: SPSpread base del
+            atacante con todos los stats excepto
+            Atk/SpA ya asignados. Si None, usar
+            spread con todos los stats en 0
+            excepto el ofensivo que se optimiza.
+        target_spreads: Lista de dicts con keys:
+            "spread" (SPSpread), "nature" (str),
+            "usage_pct" (float 0-100),
+            "target_slug" (str).
+            Si None o vacío, usar spread 0/0/0/0/0/0
+            con target_slug="unknown".
+        ko_probability_target: Probabilidad mínima
+                                de OHKO requerida.
+        field: Condiciones de campo. None = neutral.
+        pokemon_master: Datos maestros.
+
+    Returns:
+        OffensiveOptResult con found=True si se
+        encontró solución.
+        OffensiveOptResult con found=False si
+        ningún valor de Atk_sp logra el target.
+        None si el Pokémon no existe.
+    """
+    _ = reg_id
+
+    if field is None:
+        field = {}
+
+    if pokemon_master is None:
+        from src.app.core.champions_calc import (
+            _load_pokemon_master,
+        )
+
+        pokemon_master = _load_pokemon_master()
+
+    # Determinar stat ofensivo
+    category = str(
+        attacker_move.get("category", "Physical")
+    )
+    is_physical = category == "Physical"
+    stat_used = "atk" if is_physical else "spa"
+    move_name = str(attacker_move.get("name", ""))
+
+    # Verificar que el atacante existe
+    test_spread = SPSpread(
+        hp=0,
+        atk=0,
+        **{"def": 0},
+        spa=0,
+        spd=0,
+        spe=0,
+    )
+    if (
+        calc_all_stats(
+            pokemon_slug,
+            test_spread,
+            attacker_nature,
+            pokemon_master,
+        )
+        is None
+    ):
+        log.warning(
+            "Pokémon '%s' no encontrado",
+            pokemon_slug,
+        )
+        return None
+
+    # Target spreads por defecto
+    targets = target_spreads
+    if not targets:
+        default_target = SPSpread(
+            hp=0,
+            atk=0,
+            **{"def": 0},
+            spa=0,
+            spd=0,
+            spe=0,
+        )
+        targets = [
+            {
+                "spread": default_target,
+                "nature": "Hardy",
+                "usage_pct": 100.0,
+                "target_slug": "unknown",
+            },
+        ]
+
+    # Normalizar usage_pct a [0, 1]
+    total_pct = sum(
+        t.get("usage_pct", 1.0) for t in targets
+    )
+    if total_pct <= 0:
+        total_pct = 1.0
+
+    # Búsqueda uni-dimensional sobre Atk_sp
+    for atk_sp in range(33):
+        # Construir spread del atacante con
+        # este valor de Atk/SpA
+        if attacker_fixed_spread is not None:
+            base = attacker_fixed_spread
+            if is_physical:
+                new_total = (
+                    base.hp
+                    + atk_sp
+                    + base.def_
+                    + base.spa
+                    + base.spd
+                    + base.spe
+                )
+                if new_total > 66:
+                    continue
+                att_spread = SPSpread(
+                    hp=base.hp,
+                    atk=atk_sp,
+                    **{"def": base.def_},
+                    spa=base.spa,
+                    spd=base.spd,
+                    spe=base.spe,
+                )
+            else:
+                new_total = (
+                    base.hp
+                    + base.atk
+                    + base.def_
+                    + atk_sp
+                    + base.spd
+                    + base.spe
+                )
+                if new_total > 66:
+                    continue
+                att_spread = SPSpread(
+                    hp=base.hp,
+                    atk=base.atk,
+                    **{"def": base.def_},
+                    spa=atk_sp,
+                    spd=base.spd,
+                    spe=base.spe,
+                )
+        elif is_physical:
+            att_spread = SPSpread(
+                hp=0,
+                atk=atk_sp,
+                **{"def": 0},
+                spa=0,
+                spd=0,
+                spe=0,
+            )
+        else:
+            att_spread = SPSpread(
+                hp=0,
+                atk=0,
+                **{"def": 0},
+                spa=atk_sp,
+                spd=0,
+                spe=0,
+            )
+
+        # Verificar cap total (spread «libre»: ya ≤66)
+        if att_spread.total() > 66:
+            continue
+
+        # Calcular P(OHKO) ponderada por usage
+        weighted_ko_prob = 0.0
+
+        for target in targets:
+            target_spread = target.get("spread")
+            target_nature = str(
+                target.get("nature", "Hardy")
+            )
+            target_slug = str(
+                target.get("target_slug", "unknown")
+            )
+            usage_weight = float(
+                target.get("usage_pct", 1.0)
+            ) / total_pct
+
+            if target_spread is None:
+                continue
+
+            rolls = champions_damage_calc(
+                pokemon_slug,
+                att_spread,
+                attacker_nature,
+                attacker_item,
+                target_slug,
+                target_spread,
+                target_nature,
+                None,
+                attacker_move,
+                field,
+                pokemon_master,
+            )
+
+            ko_prob = float((rolls >= 1.0).mean())
+            weighted_ko_prob += (
+                usage_weight * ko_prob
+            )
+
+        if weighted_ko_prob >= ko_probability_target:
+            # Obtener stat value final
+            att_stats = calc_all_stats(
+                pokemon_slug,
+                att_spread,
+                attacker_nature,
+                pokemon_master,
+            )
+            atk_val = (
+                att_stats[stat_used]
+                if att_stats
+                else 0
+            )
+            return OffensiveOptResult(
+                min_atk_sp=atk_sp,
+                ko_prob_achieved=round(
+                    weighted_ko_prob, 4
+                ),
+                ko_prob_target=ko_probability_target,
+                stat_used=stat_used,
+                atk_stat_value=atk_val,
+                pokemon=pokemon_slug,
+                move_name=move_name,
+                n_target_spreads=len(targets),
+                found=True,
+            )
+
+    # Ningún valor de Atk_sp logra el target
+    log.info(
+        "Sin Atk_sp que garantice %.0f%% OHKO "
+        "para %s con %s",
+        ko_probability_target * 100,
+        pokemon_slug,
+        move_name,
+    )
+    return OffensiveOptResult(
+        min_atk_sp=32,
+        ko_prob_achieved=0.0,
+        ko_prob_target=ko_probability_target,
+        stat_used=stat_used,
+        atk_stat_value=0,
+        pokemon=pokemon_slug,
+        move_name=move_name,
+        n_target_spreads=len(targets),
+        found=False,
+    )
+
+
 __all__ = [
     "DefensiveOptResult",
+    "OffensiveOptResult",
     "optimize_defensive_sp",
+    "optimize_offensive_sp",
 ]
