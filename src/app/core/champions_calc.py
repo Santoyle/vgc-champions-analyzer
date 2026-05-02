@@ -432,8 +432,6 @@ def champions_damage_calc(
         if power == 0:
             return np.zeros(16, dtype=np.float64)
 
-        move_type = str(move.get("type", "")).strip().title()
-
         # Base damage (fórmula gen 9)
         base = (
             (2 * 50 / 5 + 2)
@@ -449,6 +447,10 @@ def champions_damage_calc(
         targets = int(field.get("targets", 1))
         if targets > 1:
             mod *= 0.75
+
+        # Title case como TYPE_CHART ("Water", "Fire", …).
+        # Debe ejecutarse antes de clima, STAB y efectividad.
+        move_type = str(move.get("type", "")).strip().title()
 
         # 2. Weather
         weather = field.get("weather", "")

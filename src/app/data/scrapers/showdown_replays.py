@@ -2,9 +2,12 @@
 Scraper de replays de Pokémon Showdown para la regulación activa.
 
 Descarga y parsea replays competitivos de Pokémon Showdown usando
-la API pública de replay.pokemonshowdown.com. El format_slug se
-obtiene siempre de REGULATION_TO_FORMAT (smogon_chaos.py) para
-mantener el mapeo centralizado — nunca se hardcodea aquí.
+la API pública de replay.pokemonshowdown.com.
+
+El slug de ``search.json`` sale de REGULATION_TO_FORMAT
+(smogon_chaos.py), salvo overrides locales en
+``SHOWDOWN_SEARCH_FORMAT_SLUGS_BY_REG``. Para M-A se consultan los
+dos formatos doubles de Champions VGC (swiss y bo3).
 
 Flujo de uso:
     1. fetch_recent_replays(regulation_id, max_replays, min_rating)
@@ -39,7 +42,7 @@ log = logging.getLogger(__name__)
 
 SHOWDOWN_REPLAY_BASE = "https://replay.pokemonshowdown.com"
 SHOWDOWN_SEARCH_URL = f"{SHOWDOWN_REPLAY_BASE}/search.json"
-MIN_RATING = 1300   # GC1: bajado para capturar más replays de formato nuevo
+MIN_RATING = 1350
 REQUEST_DELAY_SEC = 0.5
 MAX_PAGES = 10
 
@@ -48,6 +51,30 @@ USER_AGENT = (
     "showdown-replay-scraper "
     "(github.com/Santoyle/vgc-champions-analyzer)"
 )
+
+# Slugs Champions VGC Doubles por regulación.
+# Lista: primario (swiss/ladder), extras (p. ej. bo3).
+SHOWDOWN_SEARCH_FORMAT_SLUGS_BY_REG: dict[str, list[str]] = {
+    "M-A": [
+        "gen9championsvgc2026regma",
+        "gen9championsvgc2026regmabo3",
+    ],
+}
+
+
+def _showdown_search_format_slugs(regulation_id: str) -> list[str]:
+    """
+    Lista de ``format`` a consultar en search.json.
+
+    Overrides locales para formato correcto Showdown.
+    Fallback: un solo slug desde REGULATION_TO_FORMAT.
+    """
+    if regulation_id in SHOWDOWN_SEARCH_FORMAT_SLUGS_BY_REG:
+        return list(SHOWDOWN_SEARCH_FORMAT_SLUGS_BY_REG[regulation_id])
+    single = REGULATION_TO_FORMAT.get(regulation_id)
+    if single is None:
+        return []
+    return [single]
 
 
 @dataclass
@@ -206,7 +233,8 @@ def fetch_replay_search(
 
     Args:
         regulation_id: ID de la regulación del proyecto.
-                       Debe estar en REGULATION_TO_FORMAT.
+                       Debe estar mapeado (REGULATION_TO_FORMAT
+                       u override en SHOWDOWN_SEARCH_FORMAT_SLUGS_BY_REG).
         page: Número de página (1-indexed).
         min_rating: Rating mínimo para incluir replay.
 
@@ -215,25 +243,57 @@ def fetch_replay_search(
         Lista vacía si la regulación no está mapeada
         o si hay error de red.
     """
-    format_slug = REGULATION_TO_FORMAT.get(regulation_id)
-    if format_slug is None:
+    format_slugs = _showdown_search_format_slugs(regulation_id)
+    if not format_slugs:
         log.warning(
             "regulation_id '%s' no tiene format_slug. "
-            "IDs conocidos: %s",
+            "IDs conocidos en REGULATION_TO_FORMAT: %s",
             regulation_id,
             list(REGULATION_TO_FORMAT.keys()),
         )
         return []
 
     headers = {"User-Agent": USER_AGENT}
+    merged: dict[str, ReplayMetadata] = {}
 
     try:
         with httpx.Client(headers=headers) as client:
-            data = _fetch_json(
-                client,
-                SHOWDOWN_SEARCH_URL,
-                params={"format": format_slug, "page": page},
-            )
+            for format_slug in format_slugs:
+                data = _fetch_json(
+                    client,
+                    SHOWDOWN_SEARCH_URL,
+                    params={
+                        "format": format_slug,
+                        "page": page,
+                    },
+                )
+                battles = (
+                    data
+                    if isinstance(data, list)
+                    else data.get("battles", [])
+                )
+                if not isinstance(battles, list):
+                    battles = []
+
+                for battle in battles:
+                    if not isinstance(battle, dict):
+                        continue
+                    replay_id_str = str(battle.get("id", ""))
+                    if not replay_id_str or replay_id_str in merged:
+                        continue
+                    rating = int(battle.get("rating") or 0)
+                    if rating < min_rating:
+                        continue
+                    merged[replay_id_str] = ReplayMetadata(
+                        replay_id=replay_id_str,
+                        format_slug=format_slug,
+                        p1=str(battle.get("p1", "")),
+                        p2=str(battle.get("p2", "")),
+                        rating=rating,
+                        upload_time=int(
+                            battle.get("uploadtime", 0)
+                        ),
+                    )
     except Exception as exc:  # noqa: BLE001
         log.error(
             "Error buscando replays para %s page %d: %s",
@@ -243,34 +303,16 @@ def fetch_replay_search(
         )
         return []
 
-    battles = data if isinstance(data, list) else data.get("battles", [])
-    if not isinstance(battles, list):
-        battles = []
-
-    results: list[ReplayMetadata] = []
-    for battle in battles:
-        if not isinstance(battle, dict):
-            continue
-        rating = int(battle.get("rating") or 0)
-        if rating < min_rating:
-            continue
-        results.append(
-            ReplayMetadata(
-                replay_id=str(battle.get("id", "")),
-                format_slug=format_slug,
-                p1=str(battle.get("p1", "")),
-                p2=str(battle.get("p2", "")),
-                rating=rating,
-                upload_time=int(battle.get("uploadtime", 0)),
-            )
-        )
+    results = list(merged.values())
 
     log.info(
-        "Showdown search: %d replays (rating>=%d) para %s page %d",
+        "Showdown search: %d replays (rating>=%d) para %s page %d "
+        "(slugs=%s)",
         len(results),
         min_rating,
         regulation_id,
         page,
+        format_slugs,
     )
     return results
 
