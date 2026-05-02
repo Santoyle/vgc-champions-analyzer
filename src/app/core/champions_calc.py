@@ -341,7 +341,7 @@ def champions_damage_calc(
     Modificadores aplicados en orden gen 9:
     1. Spread damage ×0.75 si targets > 1 (doubles)
     2. Weather boost (rain/sun para Water/Fire)
-    3. Screens (Reflect ×0.5/0.667, Light Screen)
+    3. Screens (Reflect/Light Screen ×2/3 en Doubles)
     4. STAB ×1.5 si move_type en att_types
     5. Type effectiveness desde TYPE_CHART
     6. Burn ×0.5 si físico y atacante quemado
@@ -465,18 +465,14 @@ def champions_damage_calc(
             elif move_type == "Water":
                 mod *= 0.5
 
-        # 3. Screens
+        # 3. Screens (Champions siempre Doubles → ×2/3)
         if field.get("reflect_def") and is_physical:
-            mod *= (
-                2 / 3 if targets > 1 else 0.5
-            )
+            mod *= 2 / 3
         if (
             field.get("light_screen_def")
             and not is_physical
         ):
-            mod *= (
-                2 / 3 if targets > 1 else 0.5
-            )
+            mod *= 2 / 3
 
         # 4. STAB
         att_entry = None
