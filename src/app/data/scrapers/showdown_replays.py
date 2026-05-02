@@ -12,10 +12,10 @@ Flujo de uso:
     2. replays_to_records(replays) convierte a dicts planos para
        escritura en Parquet.
 
-El campo raw_log está disponible en ParsedReplay en memoria para
-cálculos avanzados (IIT, TPI, correlaciones) pero no se persiste
-en Parquet mediante replays_to_records para mantener el archivo
-compacto. Los pipelines pueden accederlo antes de la serialización.
+Para cada replay, tras la búsqueda paginada, se descarga
+``https://replay.pokemonshowdown.com/{replay_id}.json``. El campo
+``log`` de esa respuesta se guarda como ``raw_log`` en el Parquet
+(string vacío si falta el campo o viene null).
 """
 from __future__ import annotations
 
@@ -310,7 +310,12 @@ def fetch_single_replay(
         log.error("Error descargando replay %s: %s", replay_id, exc)
         return None
 
-    log_text = str(data.get("log", ""))
+    _log_raw: Any = data.get("log")
+    if _log_raw is None or _log_raw == "":
+        log_text = ""
+    else:
+        log_text = str(_log_raw)
+
     format_slug = str(data.get("format", ""))
     p1 = str(data.get("p1", ""))
     p2 = str(data.get("p2", ""))
@@ -399,12 +404,12 @@ def replays_to_records(
 
     Los equipos se serializan como JSON strings
     para compatibilidad con esquemas tabulares.
-    raw_log no se incluye para mantener el Parquet
-    compacto.
+    ``raw_log`` es el campo ``log`` del JSON del
+    replay (string; vacío si no hay log).
 
     Columnas: regulation_id, replay_id, format_slug,
     p1, p2, rating, upload_time, team_p1_json,
-    team_p2_json, winner.
+    team_p2_json, winner, raw_log.
 
     Args:
         replays: Lista de ParsedReplay a convertir.
@@ -424,6 +429,7 @@ def replays_to_records(
             "team_p1_json": json.dumps(r.team_p1),
             "team_p2_json": json.dumps(r.team_p2),
             "winner": r.winner,
+            "raw_log": r.raw_log if r.raw_log is not None else "",
         }
         for r in replays
     ]
