@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 
 SHOWDOWN_REPLAY_BASE = "https://replay.pokemonshowdown.com"
 SHOWDOWN_SEARCH_URL = f"{SHOWDOWN_REPLAY_BASE}/search.json"
-MIN_RATING = 1490   # GC1: bajado para capturar más replays de formato nuevo
+MIN_RATING = 1300   # GC1: bajado para capturar más replays de formato nuevo
 REQUEST_DELAY_SEC = 0.5
 MAX_PAGES = 10
 
