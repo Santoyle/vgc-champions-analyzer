@@ -11,6 +11,9 @@ Funciones principales:
   champions_damage_calc() — 16 damage rolls (T-115)
   type_effectiveness() — multiplicador de tipo
 
+champions_damage_calc() retorna array[16] de rolls como fracción del
+HP defensor. 0.0 = sin daño, 1.0 = OHKO exacto.
+
 Validación: Garchomp 2/32/0/0/0/32 Jolly →
   HP=185, Atk=182, Def=130, SpA=90, SpD=95, Spe=169
 """
@@ -23,8 +26,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from src.app.core.schema import SPSpread
+from src.app.modules.counter import TYPE_CHART
 
 log = logging.getLogger(__name__)
 
@@ -283,9 +288,276 @@ def calc_all_stats(
     }
 
 
+def type_effectiveness(
+    move_type: str,
+    defender_types: list[str],
+) -> float:
+    """
+    Calcula el multiplicador de efectividad de tipo
+    de un ataque contra un defensor.
+
+    Multiplica la efectividad de cada tipo del
+    defensor usando TYPE_CHART de counter.py.
+
+    Args:
+        move_type: Tipo del ataque (ej "Water").
+        defender_types: Lista de tipos del defensor
+                        (1 o 2 elementos).
+
+    Returns:
+        Multiplicador total como float.
+        0.25, 0.5, 1.0, 2.0 o 4.0 típicamente.
+        0.0 para inmunidades.
+    """
+    mult = 1.0
+    row_key = move_type.strip().title()
+    type_row = TYPE_CHART.get(row_key, {})
+    for def_type in defender_types:
+        col_key = def_type.strip().title()
+        mult *= float(
+            type_row.get(col_key, 1.0)
+        )
+    return mult
+
+
+def champions_damage_calc(
+    att_slug: str,
+    att_spread: SPSpread,
+    att_nature: str,
+    att_item: str | None,
+    def_slug: str,
+    def_spread: SPSpread,
+    def_nature: str,
+    def_item: str | None,
+    move: dict[str, Any],
+    field: dict[str, Any],
+    pokemon_master: dict[int, dict[str, Any]] | None = None,
+) -> NDArray[np.float64]:
+    """
+    Calcula los 16 damage rolls de un ataque en
+    Pokémon Champions como fracción del HP máximo
+    del defensor.
+
+    Modificadores aplicados en orden gen 9:
+    1. Spread damage ×0.75 si targets > 1 (doubles)
+    2. Weather boost (rain/sun para Water/Fire)
+    3. Screens (Reflect ×0.5/0.667, Light Screen)
+    4. STAB ×1.5 si move_type en att_types
+    5. Type effectiveness desde TYPE_CHART
+    6. Burn ×0.5 si físico y atacante quemado
+    7. Items: Life Orb ×1.3, CB/CS ×1.5, AV ×1.5 SpD
+    8. Rolls (85..100)/100 — 16 valores discretos
+
+    Args:
+        att_slug: Nombre del atacante.
+        att_spread: SPSpread del atacante.
+        att_nature: Naturaleza del atacante.
+        att_item: Ítem del atacante o None.
+        def_slug: Nombre del defensor.
+        def_spread: SPSpread del defensor.
+        def_nature: Naturaleza del defensor.
+        def_item: Ítem del defensor o None.
+        move: Dict con keys:
+              "power" (int), "type" (str),
+              "category" (str: Physical/Special),
+              "name" (str).
+        field: Dict con keys opcionales:
+               "targets" (int, default 1),
+               "weather" (str: rain/sun/sand/snow),
+               "reflect_def" (bool),
+               "light_screen_def" (bool),
+               "attacker_burned" (bool).
+        pokemon_master: Datos maestros. Carga si None.
+
+    Returns:
+        np.ndarray de shape (16,) con los 16 rolls
+        como fracción del HP máximo del defensor.
+        Cada elemento en [0.0, 1.0+].
+        Array de ceros si hay error de cálculo.
+    """
+    if pokemon_master is None:
+        pokemon_master = _load_pokemon_master()
+
+    try:
+        # Calcular stats del atacante y defensor
+        att_stats = calc_all_stats(
+            att_slug,
+            att_spread,
+            att_nature,
+            pokemon_master,
+        )
+        def_stats = calc_all_stats(
+            def_slug,
+            def_spread,
+            def_nature,
+            pokemon_master,
+        )
+
+        if att_stats is None or def_stats is None:
+            log.warning(
+                "No se encontraron stats para "
+                "%s o %s",
+                att_slug,
+                def_slug,
+            )
+            return np.zeros(16, dtype=np.float64)
+
+        # Stat de ataque y defensa según categoría
+        category = move.get("category", "Physical")
+        is_physical = category == "Physical"
+
+        # Assault Vest sube SpD ×1.5 efectivo
+        def_spd_mult = 1.0
+        if (
+            not is_physical
+            and def_item == "Assault Vest"
+        ):
+            def_spd_mult = 1.5
+
+        A = att_stats["atk"] if is_physical else att_stats["spa"]
+        D = int(
+            (
+                def_stats["def"]
+                if is_physical
+                else def_stats["spd"]
+            )
+            * def_spd_mult
+        )
+        HP_def = def_stats["hp"]
+
+        if D == 0 or HP_def == 0:
+            return np.zeros(16, dtype=np.float64)
+
+        power = int(move.get("power", 0))
+        if power == 0:
+            return np.zeros(16, dtype=np.float64)
+
+        move_type = str(move.get("type", "")).strip().title()
+
+        # Base damage (fórmula gen 9)
+        base = (
+            (2 * 50 / 5 + 2)
+            * power
+            * A
+            / D
+        ) / 50 + 2
+
+        # Modificadores
+        mod = 1.0
+
+        # 1. Spread damage (doubles con >1 target)
+        targets = int(field.get("targets", 1))
+        if targets > 1:
+            mod *= 0.75
+
+        # 2. Weather
+        weather = field.get("weather", "")
+        if weather == "rain":
+            if move_type == "Water":
+                mod *= 1.5
+            elif move_type == "Fire":
+                mod *= 0.5
+        elif weather == "sun":
+            if move_type == "Fire":
+                mod *= 1.5
+            elif move_type == "Water":
+                mod *= 0.5
+
+        # 3. Screens
+        if field.get("reflect_def") and is_physical:
+            mod *= (
+                2 / 3 if targets > 1 else 0.5
+            )
+        if (
+            field.get("light_screen_def")
+            and not is_physical
+        ):
+            mod *= (
+                2 / 3 if targets > 1 else 0.5
+            )
+
+        # 4. STAB
+        att_entry = None
+        for entry in pokemon_master.values():
+            if (
+                str(entry.get("name", "")).lower()
+                == att_slug.lower()
+            ):
+                att_entry = entry
+                break
+
+        if att_entry:
+            att_types = [
+                str(t).strip().title()
+                for t in att_entry.get("types", [])
+            ]
+            if move_type in att_types:
+                mod *= 1.5
+
+        # 5. Type effectiveness
+        def_entry = None
+        for entry in pokemon_master.values():
+            if (
+                str(entry.get("name", "")).lower()
+                == def_slug.lower()
+            ):
+                def_entry = entry
+                break
+
+        if def_entry:
+            def_types = [
+                str(t) for t in def_entry.get("types", [])
+            ]
+            eff = type_effectiveness(
+                move_type, def_types
+            )
+            mod *= eff
+
+        # 6. Burn
+        if (
+            field.get("attacker_burned")
+            and is_physical
+        ):
+            mod *= 0.5
+
+        # 7. Items del atacante
+        if att_item == "Life Orb":
+            mod *= 1.3
+        elif att_item == "Choice Band" and is_physical:
+            mod *= 1.5
+        elif (
+            att_item == "Choice Specs"
+            and not is_physical
+        ):
+            mod *= 1.5
+
+        # 8. Rolls: 16 valores (85..100)/100
+        rolls = np.array(
+            [(85 + i) / 100.0 for i in range(16)],
+            dtype=np.float64,
+        )
+        damage = np.floor(base * mod * rolls)
+        return np.divide(
+            damage,
+            np.float64(HP_def),
+            dtype=np.float64,
+        )
+
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Error en damage calc %s vs %s: %s",
+            att_slug,
+            def_slug,
+            exc,
+        )
+        return np.zeros(16, dtype=np.float64)
+
+
 __all__ = [
     "NATURE_MULT",
     "SPSpread",
     "stat_from_sp",
     "calc_all_stats",
+    "type_effectiveness",
+    "champions_damage_calc",
 ]
