@@ -9,6 +9,10 @@ con probabilidad mínima). El **Modo 1** (meta-óptimo vía NSGA-II) vivirá en
 Modo 2 expone ``optimize_defensive_sp()``: dado un atacante, un move y datos
 del defensor, busca el mínimo coste en HP/Def (o HP/SpD) que garantiza vivir el
 ataque con probabilidad mayor o igual al objetivo.
+
+**Modo 3** y **Modo 4** añaden ``optimize_offensive_sp()`` y
+``build_speed_tier_table()`` respectivamente; ``find_spe_sp_to_outspeed`` es la
+función auxiliar reutilizable para el cálculo incremental de SP en Speed (Modo 4).
 """
 
 from __future__ import annotations
@@ -18,10 +22,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from src.app.core.champions_calc import (
     calc_all_stats,
     champions_damage_calc,
+    stat_from_sp,
+    _get_nature_mult,
+    _load_pokemon_master,
 )
 from src.app.core.schema import SPSpread
 
@@ -645,9 +653,242 @@ def optimize_offensive_sp(
     )
 
 
+def _calc_speed_stat(
+    base_speed: int,
+    spe_sp: int,
+    nature: str = "Hardy",
+    scarf: bool = False,
+) -> int:
+    """
+    Calcula el stat de Speed final de un Pokémon.
+
+    Args:
+        base_speed: Velocidad base del Pokémon.
+        spe_sp: SP asignados a Speed (0-32).
+        nature: Naturaleza del Pokémon.
+        scarf: Si True, multiplica por 1.5
+               (Choice Scarf).
+
+    Returns:
+        Stat de Speed como int.
+    """
+    mult = _get_nature_mult(nature, "spe")
+    speed = stat_from_sp(
+        base_speed, spe_sp, mult
+    )
+    if scarf:
+        speed = int(speed * 1.5)
+    return speed
+
+
+def find_spe_sp_to_outspeed(
+    my_base_speed: int,
+    target_speed: int,
+    my_nature: str = "Hardy",
+    my_scarf: bool = False,
+    under_trick_room: bool = False,
+) -> int | None:
+    """
+    Encuentra el mínimo SP en Speed para superar
+    (o ser superado en TR) a un target de velocidad.
+
+    Args:
+        my_base_speed: Base speed del Pokémon
+                        a optimizar.
+        target_speed: Speed stat del rival a
+                       superar (o ser más lento).
+        my_nature: Naturaleza del Pokémon.
+        my_scarf: Si True, el Pokémon lleva Scarf.
+        under_trick_room: Si True, busca ser MÁS
+                           LENTO que target_speed.
+
+    Returns:
+        SP mínimos necesarios (0-32).
+        None si es imposible (necesitaría > 32 SP).
+    """
+    for spe_sp in range(33):
+        my_speed = _calc_speed_stat(
+            my_base_speed, spe_sp,
+            my_nature, my_scarf,
+        )
+        if under_trick_room:
+            if my_speed < target_speed:
+                return spe_sp
+        else:
+            if my_speed > target_speed:
+                return spe_sp
+    return None
+
+
+def build_speed_tier_table(
+    pokemon_slug: str,
+    reg_id: str,
+    top_n: int = 20,
+    my_nature: str = "Hardy",
+    my_scarf: bool = False,
+    pokemon_master: dict[int, dict[str, Any]] | None = None,
+) -> pd.DataFrame:
+    """
+    Construye la tabla de speed tiers para un
+    Pokémon contra el meta actual.
+
+    Para cada Pokémon del top_n del meta, calcula:
+    - spe_sp_to_outspeed: SP para superar neutral
+    - spe_sp_to_outspeed_scarfed: SP para superar
+      con Scarf (o superar al rival con Scarf)
+    - spe_sp_under_tr: SP para ser más lento (TR)
+    - target_speed: velocidad del rival (top spread)
+
+    Args:
+        pokemon_slug: Pokémon a analizar.
+        reg_id: Regulación (para futuro uso con DB).
+        top_n: Número de Pokémon del meta a incluir.
+        my_nature: Naturaleza del Pokémon.
+        my_scarf: Si True, incluye calculo con Scarf.
+        pokemon_master: Datos maestros.
+
+    Returns:
+        DataFrame con columnas:
+        target_pokemon, target_speed,
+        spe_sp_to_outspeed, my_speed_at_that_sp,
+        spe_sp_under_tr, my_speed_under_tr,
+        spe_sp_vs_scarfed, my_speed_vs_scarfed.
+        Ordenado por target_speed DESC.
+        DataFrame vacío si el Pokémon no existe.
+    """
+    _ = reg_id
+
+    if pokemon_master is None:
+        pokemon_master = _load_pokemon_master()
+
+    # Obtener base speed del Pokémon objetivo
+    my_base_speed: int | None = None
+    for entry in pokemon_master.values():
+        if str(
+            entry.get("name", "")
+        ).lower() == pokemon_slug.lower():
+            my_base_speed = int(
+                entry.get(
+                    "base_stats", {}
+                ).get("speed", 0)
+            )
+            break
+
+    if my_base_speed is None or my_base_speed == 0:
+        log.warning(
+            "Pokémon '%s' no encontrado o sin "
+            "speed base",
+            pokemon_slug,
+        )
+        return pd.DataFrame()
+
+    # Construir lista de rivales del meta
+    # (top_n por base speed descendente como proxy)
+    meta_pokemon: list[dict[str, Any]] = []
+    for entry in pokemon_master.values():
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name", "")).lower()
+        bs = entry.get("base_stats", {})
+        speed = int(bs.get("speed", 0))
+        if name and speed > 0:
+            meta_pokemon.append({
+                "name": name,
+                "base_speed": speed,
+            })
+
+    # Ordenar por base speed y tomar top_n
+    meta_pokemon.sort(
+        key=lambda x: x["base_speed"],
+        reverse=True,
+    )
+    meta_top = meta_pokemon[:top_n]
+
+    rows: list[dict[str, Any]] = []
+
+    for rival in meta_top:
+        rival_name = rival["name"]
+        rival_base_speed = rival["base_speed"]
+
+        # Speed del rival con spread 0/Hardy
+        # (base speed como referencia)
+        target_speed = _calc_speed_stat(
+            rival_base_speed, 0, "Hardy"
+        )
+
+        # SP para superar al rival neutral
+        spe_neutral = find_spe_sp_to_outspeed(
+            my_base_speed, target_speed,
+            my_nature, my_scarf,
+        )
+        my_speed_neutral = (
+            _calc_speed_stat(
+                my_base_speed, spe_neutral,
+                my_nature, my_scarf,
+            )
+            if spe_neutral is not None
+            else None
+        )
+
+        # SP para ser más lento (Trick Room)
+        spe_tr = find_spe_sp_to_outspeed(
+            my_base_speed, target_speed,
+            my_nature, False,
+            under_trick_room=True,
+        )
+        my_speed_tr = (
+            _calc_speed_stat(
+                my_base_speed, spe_tr,
+                my_nature, False,
+            )
+            if spe_tr is not None
+            else None
+        )
+
+        # SP para superar al rival con Scarf
+        target_scarfed = _calc_speed_stat(
+            rival_base_speed, 0, "Hardy", scarf=True
+        )
+        spe_vs_scarfed = find_spe_sp_to_outspeed(
+            my_base_speed, target_scarfed,
+            my_nature, my_scarf,
+        )
+        my_speed_vs_scarfed = (
+            _calc_speed_stat(
+                my_base_speed, spe_vs_scarfed,
+                my_nature, my_scarf,
+            )
+            if spe_vs_scarfed is not None
+            else None
+        )
+
+        rows.append({
+            "target_pokemon": rival_name,
+            "target_speed": target_speed,
+            "target_speed_scarfed": target_scarfed,
+            "spe_sp_to_outspeed": spe_neutral,
+            "my_speed_at_that_sp": my_speed_neutral,
+            "spe_sp_under_tr": spe_tr,
+            "my_speed_under_tr": my_speed_tr,
+            "spe_sp_vs_scarfed": spe_vs_scarfed,
+            "my_speed_vs_scarfed": my_speed_vs_scarfed,
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values("target_speed", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
 __all__ = [
     "DefensiveOptResult",
     "OffensiveOptResult",
     "optimize_defensive_sp",
     "optimize_offensive_sp",
+    "build_speed_tier_table",
+    "find_spe_sp_to_outspeed",
 ]
