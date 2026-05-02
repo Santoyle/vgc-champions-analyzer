@@ -35,7 +35,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install dbt-core dbt-duckdb
 
+      - name: Check if Parquet data exists
+        id: check_data
+        run: |
+          COUNT=$(find data/raw -name "*.parquet" 2>/dev/null | wc -l)
+          echo "parquet_count=${COUNT}" >> $GITHUB_OUTPUT
+          if [ "$COUNT" -eq 0 ]; then
+            echo "skip_dbt=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Sin Parquets en data/raw/ — dbt build saltado"
+          else
+            echo "skip_dbt=false" >> $GITHUB_OUTPUT
+            echo "✅ ${COUNT} Parquets encontrados — ejecutando dbt"
+          fi
+        shell: bash
+
       - name: Run dbt build
+        if: steps.check_data.outputs.skip_dbt == 'false'
         working-directory: dbt
         run: |
           dbt build --profiles-dir . --project-dir .
@@ -43,8 +58,8 @@ jobs:
           DBT_DUCKDB_PATH: ":memory:"
 
       - name: Discord notify on failure
-        if: failure()
+        if: failure() && steps.check_data.outputs.skip_dbt != 'true'
         run: |
           curl -s -H "Content-Type: application/json" \
-            -d "{\"content\": \"❌ dbt-build FAILED\\nRepo: ${{ github.repository }}\\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            -d "{\"content\": \"❌ dbt-build FAILED\nRepo: ${{ github.repository }}\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
             "${{ secrets.DISCORD_WEBHOOK_URL }}" || true

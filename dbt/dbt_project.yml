@@ -8,6 +8,9 @@ model-paths: ["models"]
 target-path: "target"
 clean-targets: ["target", "dbt_packages"]
 
+on-run-start:
+  - "CREATE OR REPLACE VIEW raw_usage AS SELECT * FROM read_parquet('data/raw/**/*.parquet', hive_partitioning=true, union_by_name=true) WHERE 1=0 OR (SELECT count(*) FROM glob('data/raw/**/*.parquet')) > 0"
+
 models:
   vgc_champions:
     curated:
