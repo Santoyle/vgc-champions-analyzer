@@ -165,4 +165,84 @@ class RegulationConfig(BaseModel):
         return self.checksum_sha256 == self.compute_checksum()
 
 
-__all__ = ["RegulationConfig", "BattleFormat", "Mechanics", "Clauses"]
+class SPSpread(BaseModel):
+    model_config = ConfigDict(
+        frozen=True,
+        populate_by_name=True,
+    )
+
+    hp: int = Field(ge=0, le=32, default=0)
+    atk: int = Field(ge=0, le=32, default=0)
+    def_: int = Field(
+        ge=0,
+        le=32,
+        default=0,
+        alias="def",
+    )
+    spa: int = Field(ge=0, le=32, default=0)
+    spd: int = Field(ge=0, le=32, default=0)
+    spe: int = Field(ge=0, le=32, default=0)
+
+    @model_validator(mode="after")
+    def _check_total(self) -> SPSpread:
+        total = (
+            self.hp + self.atk + self.def_
+            + self.spa + self.spd + self.spe
+        )
+        if total > 66:
+            raise ValueError(
+                f"SP total {total} excede el "
+                f"cap de 66"
+            )
+        return self
+
+    def to_evs(
+        self,
+    ) -> tuple[int, int, int, int, int, int]:
+        """
+        Convierte SP a EVs equivalentes.
+        1 SP = 8 EVs, cap 252 (no 256) por
+        compatibilidad con fórmula gen 9.
+        """
+        return (
+            min(self.hp * 8, 252),
+            min(self.atk * 8, 252),
+            min(self.def_ * 8, 252),
+            min(self.spa * 8, 252),
+            min(self.spd * 8, 252),
+            min(self.spe * 8, 252),
+        )
+
+    def total(self) -> int:
+        """Retorna la suma total de SP."""
+        return (
+            self.hp + self.atk + self.def_
+            + self.spa + self.spd + self.spe
+        )
+
+    @classmethod
+    def from_dict(cls, d: dict[str, int]) -> SPSpread:
+        """
+        Construye SPSpread desde dict con keys
+        hp, atk, def, spa, spd, spe.
+        Acepta tanto 'def' como 'def_' como key.
+        """
+        return cls.model_validate(
+            {
+                "hp": d.get("hp", 0),
+                "def": d.get("def", d.get("def_", 0)),
+                "atk": d.get("atk", 0),
+                "spa": d.get("spa", 0),
+                "spd": d.get("spd", 0),
+                "spe": d.get("spe", 0),
+            }
+        )
+
+
+__all__ = [
+    "RegulationConfig",
+    "BattleFormat",
+    "Mechanics",
+    "Clauses",
+    "SPSpread",
+]
