@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS replay_turns (
     tailwind_p2_turns SMALLINT  DEFAULT 0,
     mega_used_p1      BOOLEAN   DEFAULT FALSE,
     mega_used_p2      BOOLEAN   DEFAULT FALSE,
+    mega_pokemon_slug VARCHAR,
     ko_diff           SMALLINT  DEFAULT 0,
     winner            VARCHAR   NOT NULL,
     PRIMARY KEY (

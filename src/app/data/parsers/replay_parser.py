@@ -69,6 +69,8 @@ class GameState:
     tailwind_p2_turns: int = 0
     mega_used_p1: bool = False
     mega_used_p2: bool = False
+    mega_slug_p1: str = ""
+    mega_slug_p2: str = ""
     ko_diff: int = 0  # KOs p1 - KOs p2
     # HP actual por slot: {"p1a": 1.0, "p1b": 1.0, ...}
     hp: dict[str, float] = field(
@@ -277,6 +279,14 @@ def parse_replay_log(
             "tailwind_p2_turns": state.tailwind_p2_turns,
             "mega_used_p1": state.mega_used_p1,
             "mega_used_p2": state.mega_used_p2,
+            "mega_pokemon_slug": (
+                (
+                    state.mega_slug_p1
+                    if player == "p1"
+                    else state.mega_slug_p2
+                )
+                or None
+            ),
             "ko_diff": state.ko_diff,
             "winner": winner_key,
         }
@@ -491,9 +501,22 @@ def parse_replay_log(
         elif event == "-mega":
             if len(parts) >= 3:
                 player, _ = _parse_slot(parts[2])
+                raw_slot = parts[2]
+                pkm_name = (
+                    raw_slot.split(":", 1)[1].strip()
+                    if ":" in raw_slot
+                    else ""
+                )
+                slug = (
+                    _normalize_slug(pkm_name)
+                    if pkm_name
+                    else ""
+                )
                 if player == "p1":
+                    state.mega_slug_p1 = slug
                     state.mega_used_p1 = True
                 else:
+                    state.mega_slug_p2 = slug
                     state.mega_used_p2 = True
 
         # Limpiar pending_move al final del turno

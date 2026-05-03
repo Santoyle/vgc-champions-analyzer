@@ -472,6 +472,7 @@ def compute_meti(
                 pokemon_slug,
                 mega_used_p1,
                 mega_used_p2,
+                mega_pokemon_slug,
                 winner
             FROM replay_turns
             WHERE regulation_id = ?
@@ -480,12 +481,37 @@ def compute_meti(
             [reg_id],
         ).df()
     except Exception as exc:
-        log.warning(
-            "Error cargando replay_turns "
-            "para METI %s: %s",
-            reg_id, exc,
-        )
-        return pd.DataFrame(columns=empty_cols)
+        try:
+            df = _con.execute(
+                """
+                SELECT
+                    replay_id,
+                    turn,
+                    player,
+                    pokemon_slug,
+                    mega_used_p1,
+                    mega_used_p2,
+                    winner
+                FROM replay_turns
+                WHERE regulation_id = ?
+                  AND pokemon_slug IS NOT NULL
+                """,
+                [reg_id],
+            ).df()
+        except Exception as exc2:
+            log.warning(
+                "Error cargando replay_turns "
+                "para METI %s: %s",
+                reg_id,
+                exc2,
+            )
+            return pd.DataFrame(columns=empty_cols)
+        else:
+            log.debug(
+                "METI: cargando sin mega_pokemon_slug "
+                "(primer intento falló: %s)",
+                exc,
+            )
 
     if df.empty:
         return pd.DataFrame(columns=empty_cols)
@@ -527,16 +553,38 @@ def compute_meti(
         )
         won_val = bool(grp["won"].iloc[0])
 
-        # Tomar el Pokémon Mega del replay
-        # (el que estaba activo al activar Mega)
+        # Tomar el Pokémon que Megaevolucionó
+        # (mega_pokemon_slug si existe; si no,
+        # pokemon_slug activo en el turno).
         if mega_turn is not None:
             mega_row = grp[
                 grp["turn"] == mega_turn
             ]
             if not mega_row.empty:
-                pkm = str(
-                    mega_row["pokemon_slug"].iloc[0]
-                )
+                if "mega_pokemon_slug" in grp.columns:
+                    mps = mega_row[
+                        "mega_pokemon_slug"
+                    ]
+                    picked = ""
+                    for v in mps:
+                        if pd.isna(v):
+                            continue
+                        s = str(v).strip()
+                        if s:
+                            picked = s
+                            break
+                    if picked:
+                        pkm = picked
+                    else:
+                        pkm = str(
+                            mega_row[
+                                "pokemon_slug"
+                            ].iloc[0]
+                        )
+                else:
+                    pkm = str(
+                        mega_row["pokemon_slug"].iloc[0]
+                    )
             else:
                 pkm = pkm_list[0] if pkm_list else ""
         else:
