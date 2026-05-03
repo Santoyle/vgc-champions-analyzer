@@ -3,17 +3,21 @@ Métricas avanzadas del **Bloque 15** (Champions).
 
 Aquí viven **MEIT** (T-131), **TAI** (T-132) y **Shapley** (T-133) según el
 roadmap. ``compute_meit`` reutiliza **METI** (``compute_meti`` en
-``mlwr``) como sub-componente; el resto de funciones se añadirá en sus
-tickets correspondientes.
+``mlwr``) como sub-componente; ``compute_tai`` cubre el índice de
+adaptabilidad frente a arquetipos del meta (T-132).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pandas as pd
 import streamlit as st
+
+if TYPE_CHECKING:
+    import xgboost as xgb
 
 from src.app.metrics.mlwr import compute_meti
 
@@ -212,6 +216,310 @@ def compute_meit(
     }
 
 
+def _estimate_wr_vs_archetype(
+    team_slugs: tuple[str, ...],
+    archetype_pokemon: list[str],
+    wp_model: Any | None,
+    reg_id: str,
+) -> float:
+    """
+    Estima el WR del equipo contra un arquetipo
+    del meta.
+
+    Si wp_model disponible: usa predict_win_prob.
+    Si no: usa heurístico de type coverage
+    normalizado a [0.35, 0.65].
+
+    Args:
+        team_slugs: Pokémon del equipo a evaluar.
+        archetype_pokemon: Pokémon representativos
+                            del arquetipo rival.
+        wp_model: Modelo XGBoost o None.
+        reg_id: Regulación activa.
+
+    Returns:
+        WR estimada en [0.0, 1.0].
+    """
+    if wp_model is not None:
+        try:
+            from src.app.modules.wp import (
+                predict_win_prob,
+            )
+
+            wr = predict_win_prob(
+                list(team_slugs),
+                archetype_pokemon,
+                reg_id,
+                wp_model,
+            )
+            return float(
+                max(0.0, min(1.0, wr))
+            )
+        except Exception as exc:
+            log.debug(
+                "WP model falló para TAI: %s",
+                exc,
+            )
+
+    # Heurístico: proporción de tipos cubiertos
+    # Normalizado a [0.35, 0.65]
+    try:
+        from src.app.core.champions_calc import (
+            type_effectiveness,
+            _load_pokemon_master,
+        )
+
+        pm = _load_pokemon_master()
+
+        def get_types(slug: str) -> list[str]:
+            for entry in pm.values():
+                if str(
+                    entry.get("name", "")
+                ).lower() == slug.lower():
+                    return [
+                        str(t).title()
+                        for t in entry.get(
+                            "types", []
+                        )
+                    ]
+            return []
+
+        score = 0.0
+        comparisons = 0
+        for my_pkm in team_slugs:
+            my_types = get_types(my_pkm)
+            for opp_pkm in archetype_pokemon:
+                opp_types = get_types(opp_pkm)
+                if my_types and opp_types:
+                    for my_t in my_types:
+                        eff = type_effectiveness(
+                            my_t, opp_types
+                        )
+                        score += eff
+                        comparisons += 1
+
+        if comparisons == 0:
+            return 0.5
+
+        raw = score / comparisons
+        return 0.35 + (
+            min(raw, 4.0) / 4.0
+        ) * 0.30
+
+    except Exception as exc:
+        log.debug(
+            "Heurístico TAI falló: %s", exc
+        )
+        return 0.5
+
+
+@st.cache_data(ttl=3600, show_spinner=False)  # type: ignore[untyped-decorator]
+def compute_tai(
+    reg_id: str,
+    team_slugs: tuple[str, ...],
+    _con: Any,
+    wp_model: Any | None = None,
+    lambda_penalty: float = 0.5,
+) -> dict[str, Any]:
+    """
+    Calcula el TAI (Teambuilder Adaptability Index)
+    para un equipo dado.
+
+    TAI = Σ_m usage(meta_m) · WR(team, meta_m)
+          - λ · Var[WR]
+
+    Args:
+        reg_id: Regulación activa.
+        team_slugs: Tuple con los slugs del equipo
+                     (normalmente 6 Pokémon).
+        _con: Conexión DuckDB (prefijo _ para
+              que st.cache_data no la hashee).
+        wp_model: Modelo XGBoost opcional.
+                   Si None, usa heurístico.
+        lambda_penalty: Coeficiente de penalización
+                         de varianza. Default 0.5.
+
+    Returns:
+        Dict con keys:
+        - tai_score: float
+        - weighted_wr: float (sin penalización)
+        - wr_variance: float
+        - lambda_penalty: float
+        - n_archetypes: int
+        - archetype_breakdown: list[dict] con
+          archetype_id, usage_pct, estimated_wr
+          para cada arquetipo
+        - regulation_id: str
+        - team: list[str]
+        - found: bool
+    """
+    empty_result: dict[str, Any] = {
+        "tai_score":           0.0,
+        "weighted_wr":         0.0,
+        "wr_variance":         0.0,
+        "lambda_penalty":      lambda_penalty,
+        "n_archetypes":        0,
+        "archetype_breakdown": [],
+        "regulation_id":       reg_id,
+        "team":                list(team_slugs),
+        "found":               False,
+    }
+
+    if len(team_slugs) < 2:
+        log.warning(
+            "TAI requiere al menos 2 Pokémon "
+            "en el equipo"
+        )
+        return empty_result
+
+    # Obtener clusters del meta
+    try:
+        from src.app.modules.clustering import (
+            cluster_kmeans,
+        )
+
+        df_usage = _con.execute(
+            """
+            SELECT pokemon, AVG(usage_pct) AS usage_pct
+            FROM read_parquet(
+                'data/raw/reg=*/source=pikalytics/*.parquet',
+                hive_partitioning=true
+            )
+            WHERE regulation_id = ?
+              AND pokemon IS NOT NULL
+            GROUP BY pokemon
+            ORDER BY usage_pct DESC
+            LIMIT 50
+            """,
+            [reg_id],
+        ).df()
+
+        if df_usage.empty:
+            log.info(
+                "Sin datos de uso para clusters "
+                "de TAI %s",
+                reg_id,
+            )
+            return empty_result
+
+        cluster_result = cluster_kmeans(
+            df_usage,
+            n_clusters=min(8, len(df_usage)),
+            feature_cols=["usage_pct"],
+        )
+        df_clusters = cluster_result.df_clustered.rename(
+            columns={"cluster": "cluster_id"}
+        )
+        df_clusters = df_clusters.merge(
+            df_usage, left_index=True,
+            right_index=True, how="left",
+        )
+        df_clusters["pokemon"] = df_usage[
+            "pokemon"
+        ].values
+    except Exception as exc:
+        log.warning(
+            "Error obteniendo clusters para "
+            "TAI %s: %s",
+            reg_id, exc,
+        )
+        return empty_result
+
+    if df_clusters is None or df_clusters.empty:
+        log.info(
+            "Sin clusters disponibles para %s",
+            reg_id,
+        )
+        return empty_result
+
+    # Agrupar Pokémon por cluster
+    cluster_groups: dict[
+        int, list[str]
+    ] = {}
+    cluster_usage: dict[int, float] = {}
+
+    for _, row in df_clusters.iterrows():
+        cid = int(row.get("cluster_id", 0))
+        pkm = str(row.get("pokemon", ""))
+        usage = float(row.get("usage_pct", 0.0))
+
+        if cid not in cluster_groups:
+            cluster_groups[cid] = []
+            cluster_usage[cid] = 0.0
+
+        cluster_groups[cid].append(pkm)
+        cluster_usage[cid] = max(
+            cluster_usage[cid], usage
+        )
+
+    if not cluster_groups:
+        return empty_result
+
+    # Normalizar usage por cluster
+    total_usage = sum(cluster_usage.values())
+    if total_usage <= 0:
+        total_usage = 1.0
+
+    # Calcular WR estimada vs cada arquetipo
+    wr_list: list[float] = []
+    usage_list: list[float] = []
+    breakdown: list[dict[str, Any]] = []
+
+    for cid, pkm_list in cluster_groups.items():
+        usage_norm = (
+            cluster_usage[cid] / total_usage
+        )
+        # Tomar top-4 Pokémon del arquetipo
+        archetype_pkm = pkm_list[:4]
+
+        wr = _estimate_wr_vs_archetype(
+            team_slugs,
+            archetype_pkm,
+            wp_model,
+            reg_id,
+        )
+
+        wr_list.append(wr)
+        usage_list.append(usage_norm)
+        breakdown.append({
+            "archetype_id": cid,
+            "usage_pct": round(
+                usage_norm * 100, 2
+            ),
+            "estimated_wr": round(wr, 4),
+            "top_pokemon": archetype_pkm,
+        })
+
+    # TAI = Σ usage·WR - λ·Var[WR]
+    wr_array = np.array(wr_list)
+    usage_array = np.array(usage_list)
+
+    weighted_wr = float(
+        np.dot(usage_array, wr_array)
+    )
+    wr_variance = float(np.var(wr_array))
+    tai_score = weighted_wr - (
+        lambda_penalty * wr_variance
+    )
+
+    return {
+        "tai_score":           round(tai_score, 4),
+        "weighted_wr":         round(weighted_wr, 4),
+        "wr_variance":         round(wr_variance, 6),
+        "lambda_penalty":      lambda_penalty,
+        "n_archetypes":        len(cluster_groups),
+        "archetype_breakdown": sorted(
+            breakdown,
+            key=lambda x: x["usage_pct"],
+            reverse=True,
+        ),
+        "regulation_id":       reg_id,
+        "team":                list(team_slugs),
+        "found":               True,
+    }
+
+
 __all__ = [
     "compute_meit",
+    "compute_tai",
 ]
