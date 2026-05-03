@@ -10,12 +10,19 @@ implementa en T-127.
 
 from __future__ import annotations
 
+import itertools
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
 import duckdb
 import pandas as pd
+import streamlit as st
+
+from src.app.core.champions_calc import (
+    _load_pokemon_master,
+    type_effectiveness,
+)
 
 log = logging.getLogger(__name__)
 
@@ -312,7 +319,254 @@ def populate_lead_pair_stats(
         con.close()
 
 
+def _cold_start_score(
+    my_lead_a: str,
+    my_lead_b: str,
+    opp_lead_a: str,
+    opp_lead_b: str,
+    pokemon_master: dict[int, dict[str, Any]],
+) -> float:
+    """
+    Calcula un score de type matchup para el
+    cold start (sin datos históricos suficientes).
+
+    Suma la efectividad de tipo de cada Pokémon
+    del equipo propio contra los del rival y
+    normaliza a [0.35, 0.65].
+
+    Args:
+        my_lead_a: Primer Pokémon del equipo.
+        my_lead_b: Segundo Pokémon del equipo.
+        opp_lead_a: Primer Pokémon rival.
+        opp_lead_b: Segundo Pokémon rival.
+        pokemon_master: Datos maestros.
+
+    Returns:
+        Float en [0.35, 0.65].
+    """
+
+    def get_types(slug: str) -> list[str]:
+        for entry in pokemon_master.values():
+            if str(
+                entry.get("name", "")
+            ).lower() == slug.lower():
+                return [
+                    str(t).title()
+                    for t in entry.get("types", [])
+                ]
+        return []
+
+    my_types_a = get_types(my_lead_a)
+    my_types_b = get_types(my_lead_b)
+    opp_types_a = get_types(opp_lead_a)
+    opp_types_b = get_types(opp_lead_b)
+
+    score = 0.0
+    comparisons = 0
+
+    for my_types in [my_types_a, my_types_b]:
+        for opp_types in [opp_types_a, opp_types_b]:
+            if my_types and opp_types:
+                for my_t in my_types:
+                    eff = type_effectiveness(
+                        my_t, opp_types
+                    )
+                    score += eff
+                    comparisons += 1
+
+    if comparisons == 0:
+        return 0.5
+
+    raw = score / comparisons
+    # Normalizar a [0.35, 0.65]
+    normalized = 0.35 + (
+        min(raw, 4.0) / 4.0
+    ) * 0.30
+    return round(normalized, 4)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)  # type: ignore[untyped-decorator]
+def lead_recommendation(
+    reg_id: str,
+    my_team_slugs: tuple[str, ...],
+    opp_team_slugs: tuple[str, ...],
+    _con: Any,
+    min_n_per_cell: int = 5,
+) -> pd.DataFrame:
+    """
+    Recomienda los mejores pares de leads contra
+    un equipo rival usando expected value.
+
+    Calcula EV para las C(6,2)=15 combinaciones
+    de leads propios contra las C(6,2)=15
+    combinaciones de leads del rival.
+
+    Algoritmo (Opción B — expected value):
+    1. Para cada opp_lead_pair (15 combinaciones
+       del rival): obtener frecuencia histórica
+       desde lead_pair_stats (smoothing Laplace).
+    2. Normalizar para obtener P(opp_lead).
+    3. Para cada my_lead_pair (15 combinaciones):
+       EV = Σ P(opp_lead) × WR(my_lead | opp_lead)
+       Cuando n < min_n_per_cell: usar cold start.
+    4. Retornar top-15 ordenado por EV DESC.
+
+    Args:
+        reg_id: Regulación activa.
+        my_team_slugs: Tuple con los 6 slugs del
+                        equipo propio.
+        opp_team_slugs: Tuple con los 6 slugs del
+                         equipo rival.
+        _con: Conexión DuckDB (prefijo _ para que
+              st.cache_data no la hashee).
+        min_n_per_cell: Mínimo de partidas para
+                         usar datos reales vs
+                         cold start fallback.
+
+    Returns:
+        DataFrame con columnas:
+        my_lead_a, my_lead_b, expected_win_prob,
+        n_matchups_with_data, regulation_id.
+        15 filas ordenadas por expected_win_prob DESC.
+        DataFrame vacío si hay error crítico.
+    """
+    if len(my_team_slugs) < 2:
+        log.warning(
+            "my_team_slugs necesita al menos 2 "
+            "Pokémon, recibidos: %d",
+            len(my_team_slugs),
+        )
+        return pd.DataFrame(columns=[
+            "my_lead_a", "my_lead_b",
+            "expected_win_prob",
+            "n_matchups_with_data",
+            "regulation_id",
+        ])
+
+    if len(opp_team_slugs) < 2:
+        log.warning(
+            "opp_team_slugs necesita al menos 2 "
+            "Pokémon, recibidos: %d",
+            len(opp_team_slugs),
+        )
+        return pd.DataFrame(columns=[
+            "my_lead_a", "my_lead_b",
+            "expected_win_prob",
+            "n_matchups_with_data",
+            "regulation_id",
+        ])
+
+    pokemon_master = _load_pokemon_master()
+
+    # Cargar datos de lead_pair_stats
+    try:
+        df_lps = _con.execute(
+            """
+            SELECT
+                my_lead_a, my_lead_b,
+                opp_lead_a, opp_lead_b,
+                n_matches, win_rate
+            FROM lead_pair_stats
+            WHERE regulation_id = ?
+            """,
+            [reg_id],
+        ).df()
+    except Exception as exc:
+        log.warning(
+            "Error cargando lead_pair_stats: %s",
+            exc,
+        )
+        df_lps = pd.DataFrame()
+
+    # Generar todas las combinaciones C(n,2)
+    my_pairs = list(itertools.combinations(
+        sorted(my_team_slugs), 2
+    ))
+    opp_pairs = list(itertools.combinations(
+        sorted(opp_team_slugs), 2
+    ))
+
+    # Calcular frecuencia histórica de leads
+    # del rival (smoothing Laplace)
+    opp_freq: dict[tuple[str, str], float] = {}
+    for opp_a, opp_b in opp_pairs:
+        opp_a_s, opp_b_s = sorted([opp_a, opp_b])
+        if not df_lps.empty:
+            mask = (
+                (df_lps["opp_lead_a"] == opp_a_s)
+                & (df_lps["opp_lead_b"] == opp_b_s)
+            )
+            n_seen = int(
+                df_lps[mask]["n_matches"].sum()
+            )
+        else:
+            n_seen = 0
+        # Laplace smoothing: max(n, 1)
+        opp_freq[(opp_a_s, opp_b_s)] = max(
+            n_seen, 1
+        )
+
+    total_opp_freq = sum(opp_freq.values())
+
+    # Calcular EV para cada par propio
+    rows = []
+    for my_a, my_b in my_pairs:
+        my_a_s, my_b_s = sorted([my_a, my_b])
+        ev = 0.0
+        n_with_data = 0
+
+        for (opp_a_s, opp_b_s), freq in opp_freq.items():
+            p_opp = freq / total_opp_freq
+
+            # Buscar WR en lead_pair_stats
+            wr: float | None = None
+            if not df_lps.empty:
+                mask = (
+                    (df_lps["my_lead_a"] == my_a_s)
+                    & (df_lps["my_lead_b"] == my_b_s)
+                    & (df_lps["opp_lead_a"] == opp_a_s)
+                    & (df_lps["opp_lead_b"] == opp_b_s)
+                )
+                matched = df_lps[mask]
+                if not matched.empty:
+                    n_cell = int(
+                        matched["n_matches"].iloc[0]
+                    )
+                    if n_cell >= min_n_per_cell:
+                        wr = float(
+                            matched["win_rate"].iloc[0]
+                        )
+                        n_with_data += 1
+
+            if wr is None:
+                # Cold start fallback
+                wr = _cold_start_score(
+                    my_a_s, my_b_s,
+                    opp_a_s, opp_b_s,
+                    pokemon_master,
+                )
+
+            ev += p_opp * wr
+
+        rows.append({
+            "my_lead_a":            my_a_s,
+            "my_lead_b":            my_b_s,
+            "expected_win_prob":    round(ev, 4),
+            "n_matchups_with_data": n_with_data,
+            "regulation_id":        reg_id,
+        })
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(
+            "expected_win_prob", ascending=False
+        )
+        .reset_index(drop=True)
+    )
+
+
 __all__ = [
     "populate_lead_pair_stats",
+    "lead_recommendation",
     "LEAD_PAIR_STATS_DDL",
 ]
