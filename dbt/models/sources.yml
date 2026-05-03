@@ -7,4 +7,4 @@ sources:
       - name: usage
         description: "Vista raw_usage sobre todos los Parquets"
         meta:
-          parquet_glob: "data/raw/**/*.parquet"
+          parquet_glob: "../data/raw/**/*.parquet"
