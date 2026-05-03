@@ -1,10 +1,9 @@
 {{ config(materialized='table') }}
-
 SELECT
     regulation_id,
     pokemon,
-    year_month,
-    teammates_json
+    NULL::VARCHAR AS teammate,
+    NULL::FLOAT   AS avg_correlation,
+    0             AS n_months_seen
 FROM raw_usage
-WHERE teammates_json IS NOT NULL
-  AND teammates_json != '{}'
+WHERE 1=0

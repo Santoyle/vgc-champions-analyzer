@@ -1,10 +1,9 @@
 {{ config(materialized='table') }}
-
 SELECT
     regulation_id,
     pokemon,
-    year_month,
-    moves_json
+    NULL::VARCHAR AS move,
+    NULL::FLOAT   AS avg_pct,
+    0             AS n_months_seen
 FROM raw_usage
-WHERE moves_json IS NOT NULL
-  AND moves_json != '{}'
+WHERE 1=0
