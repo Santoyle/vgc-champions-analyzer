@@ -5,6 +5,8 @@ Aquí viven **MEIT** (T-131), **TAI** (T-132) y **Shapley** (T-133) según el
 roadmap. ``compute_meit`` reutiliza **METI** (``compute_meti`` en
 ``mlwr``) como sub-componente; ``compute_tai`` cubre el índice de
 adaptabilidad frente a arquetipos del meta (T-132).
+``normalize_metric_cross_reg`` implementa T-136 del Bloque 16
+(comparación cross-reg vía z-score / min-max por regulación).
 """
 
 from __future__ import annotations
@@ -690,8 +692,111 @@ def shapley_slot_value(
     return normalized
 
 
+def normalize_metric_cross_reg(
+    metric_values: dict[str, pd.Series],
+    method: str = "zscore",
+) -> pd.DataFrame:
+    """
+    Normaliza una métrica a través de múltiples
+    regulaciones para comparación cross-reg.
+
+    Recibe un dict {reg_id: Series de valores}
+    donde cada Series tiene el pokemon como índice
+    y el valor de la métrica como valor.
+
+    Args:
+        metric_values: Dict {reg_id: pd.Series}
+            donde el índice de cada Serie es
+            pokemon_slug y el valor es el
+            valor de la métrica.
+        method: Método de normalización.
+            "zscore": normaliza a media=0, std=1
+                      dentro de cada regulación.
+            "minmax": normaliza a [0, 1] dentro
+                      de cada regulación.
+            Default: "zscore".
+
+    Returns:
+        DataFrame con columnas:
+        pokemon_slug, regulation_id,
+        raw_value, normalized_value.
+        Ordenado por regulation_id, normalized_value.
+        DataFrame vacío si metric_values vacío.
+
+    Raises:
+        ValueError: Si method no es "zscore"
+                    ni "minmax".
+    """
+    if not metric_values:
+        return pd.DataFrame(columns=[
+            "pokemon_slug", "regulation_id",
+            "raw_value", "normalized_value",
+        ])
+
+    if method not in ("zscore", "minmax"):
+        raise ValueError(
+            f"method debe ser 'zscore' o 'minmax',"
+            f" recibido: '{method}'"
+        )
+
+    rows: list[dict[str, Any]] = []
+
+    for reg_id, series in metric_values.items():
+        if series.empty:
+            continue
+
+        values = series.values.astype(float)
+
+        if method == "zscore":
+            mean = float(np.mean(values))
+            std = float(np.std(values))
+            if std < 1e-9:
+                normalized = np.zeros_like(values)
+            else:
+                normalized = (values - mean) / std
+
+        else:  # minmax
+            v_min = float(np.min(values))
+            v_max = float(np.max(values))
+            if (v_max - v_min) < 1e-9:
+                normalized = np.zeros_like(values)
+            else:
+                normalized = (
+                    (values - v_min)
+                    / (v_max - v_min)
+                )
+
+        for pkm, raw, norm in zip(
+            series.index,
+            values,
+            normalized,
+        ):
+            rows.append({
+                "pokemon_slug":    str(pkm),
+                "regulation_id":   reg_id,
+                "raw_value":       float(raw),
+                "normalized_value": float(norm),
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=[
+            "pokemon_slug", "regulation_id",
+            "raw_value", "normalized_value",
+        ])
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(
+            ["regulation_id", "normalized_value"],
+            ascending=[True, False],
+        )
+        .reset_index(drop=True)
+    )
+
+
 __all__ = [
     "compute_meit",
     "compute_tai",
     "shapley_slot_value",
+    "normalize_metric_cross_reg",
 ]
