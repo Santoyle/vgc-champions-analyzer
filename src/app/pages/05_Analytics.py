@@ -172,6 +172,7 @@ st.divider()
     tab_meti_meit,
     tab_tai,
     tab_shapley,
+    tab_cross_reg,
 ) = st.tabs([
     "⚡ EI — Efficiency Item",
     "🏃 STC — Speed Tier Control",
@@ -182,6 +183,7 @@ st.divider()
     "⏱️ METI/MEIT",
     "🎲 TAI",
     "🔢 Shapley SV",
+    "📊 Cross-Reg",
 ])
 
 # ── TAB 1 — EI ───────────────────────────────────────────────────────────────
@@ -1127,3 +1129,270 @@ with tab_shapley:
                     )
     except Exception as exc:
         st.error(f"Shapley SV: {exc}")
+
+
+with tab_cross_reg:
+    # ── Tab Cross-Reg — Bloque 16 ──────────
+    st.subheader("📊 Cross-Reg")
+
+    metric_cr = st.selectbox(
+        "Métrica a comparar",
+        options=["EI", "MLWR", "STC", "TPI"],
+        key="v2_cross_metric",
+    )
+
+    try:
+        con_cr = get_duckdb()
+        top_pkm_cr = con_cr.execute(
+            """
+            SELECT pokemon, AVG(usage_pct) AS u
+            FROM read_parquet(
+              'data/raw/reg=*/source=pikalytics/*.parquet',
+              hive_partitioning=true
+            )
+            GROUP BY pokemon
+            ORDER BY u DESC
+            LIMIT 30
+            """
+        ).df()["pokemon"].tolist()
+    except Exception:
+        top_pkm_cr = [
+            "garchomp",
+            "incineroar",
+            "primarina",
+            "archaludon",
+        ]
+
+    sel_pkm = st.multiselect(
+        "Pokémon a comparar (máx 5)",
+        options=top_pkm_cr or ["garchomp"],
+        default=(
+            top_pkm_cr[:2]
+            if len(top_pkm_cr) >= 2
+            else top_pkm_cr
+        ),
+        max_selections=5,
+        key="v2_cross_pkm",
+    )
+
+    if metric_cr in ("STC", "TPI"):
+        st.info(
+            "Aproximación: STC y TPI se muestran "
+            "vía **usage_pct** agregado de Pikalytics "
+            "(misma proxy que referencia de tendencia; "
+            "no es el cálculo STC/TPI completo)."
+        )
+
+    if st.button(
+        "📊 Generar gráfico cross-reg",
+        key="v2_cross_go",
+    ):
+        try:
+            from src.app.metrics.advanced_metrics import (
+                normalize_metric_cross_reg,
+            )
+            from src.app.metrics.mlwr import (
+                compute_mlwr_level1,
+            )
+            import plotly.express as px
+
+            con = get_duckdb()
+
+            if not sel_pkm:
+                st.warning(
+                    "Selecciona al menos un Pokémon."
+                )
+            else:
+                df_regs = con.execute(
+                    """
+                    SELECT DISTINCT regulation_id
+                    FROM read_parquet(
+                      'data/raw/reg=*/source=pikalytics/*.parquet',
+                      hive_partitioning=true
+                    )
+                    ORDER BY regulation_id
+                    """
+                ).df()
+                reg_list = (
+                    df_regs["regulation_id"].astype(str).tolist()
+                )
+
+                if len(reg_list) < 2:
+                    st.warning(
+                        "Se necesitan al menos 2 "
+                        "regulaciones para el gráfico "
+                        "cross-reg. Actualmente solo hay "
+                        "datos para: "
+                        f"{', '.join(reg_list) or '(ninguna)'}"
+                    )
+                else:
+                    metric_values: dict[
+                        str, pd.Series
+                    ] = {}
+
+                    if metric_cr in (
+                        "EI",
+                        "STC",
+                        "TPI",
+                    ):
+                        ph = ", ".join(
+                            ["?"] * len(sel_pkm)
+                        )
+                        q_usage = f"""
+                            SELECT regulation_id, pokemon,
+                                   AVG(usage_pct) AS value
+                            FROM read_parquet(
+                              'data/raw/reg=*/source=pikalytics/*.parquet',
+                              hive_partitioning=true
+                            )
+                            WHERE pokemon IN ({ph})
+                            GROUP BY regulation_id, pokemon
+                        """
+                        df_u = con.execute(
+                            q_usage,
+                            list(sel_pkm),
+                        ).df()
+                        for rid in reg_list:
+                            sub = df_u[
+                                df_u["regulation_id"] == rid
+                            ]
+                            if sub.empty:
+                                continue
+                            s = sub.set_index(
+                                "pokemon"
+                            )["value"].astype(float)
+                            metric_values[str(rid)] = s
+
+                    else:  # MLWR
+                        for rid in reg_list:
+                            df_m = (
+                                compute_mlwr_level1(
+                                    str(rid),
+                                    con,
+                                    min_n=3,
+                                )
+                            )
+                            if df_m.empty:
+                                continue
+                            df_m = df_m[
+                                df_m["pokemon_slug"].isin(
+                                    sel_pkm
+                                )
+                            ]
+                            if df_m.empty:
+                                continue
+                            ser = (
+                                df_m.groupby(
+                                    "pokemon_slug"
+                                )["mlwr"]
+                                .mean()
+                            )
+                            metric_values[str(rid)] = ser
+
+                    regs_with_data = sorted(
+                        metric_values.keys()
+                    )
+                    if len(regs_with_data) < 2:
+                        st.warning(
+                            "Se necesitan al menos 2 "
+                            "regulaciones para el gráfico "
+                            "cross-reg. Actualmente solo hay "
+                            "datos para: "
+                            f"{', '.join(regs_with_data) or '(ninguna)'}"
+                        )
+                    else:
+                        df_cross = (
+                            normalize_metric_cross_reg(
+                                metric_values,
+                                method="zscore",
+                            )
+                        )
+                        if df_cross.empty:
+                            st.info(
+                                "Sin filas normalizadas "
+                                "para mostrar."
+                            )
+                        else:
+                            order_x = sorted(
+                                df_cross[
+                                    "regulation_id"
+                                ].unique()
+                            )
+                            fig_cr = px.line(
+                                df_cross,
+                                x="regulation_id",
+                                y="normalized_value",
+                                color="pokemon_slug",
+                                markers=True,
+                                category_orders={
+                                    "regulation_id": order_x,
+                                },
+                                hover_data={
+                                    "raw_value": ":.4f",
+                                    "normalized_value": ":.4f",
+                                },
+                                labels={
+                                    "regulation_id": (
+                                        "Regulación"
+                                    ),
+                                    "normalized_value": (
+                                        "Valor normalizado (z)"
+                                    ),
+                                    "pokemon_slug": "Pokémon",
+                                },
+                                title=(
+                                    f"{metric_cr} — "
+                                    "tendencia cross-reg "
+                                    "(z-score por reg.)"
+                                ),
+                            )
+                            st.plotly_chart(
+                                fig_cr,
+                                use_container_width=True,
+                            )
+
+                            df_pivot = df_cross.pivot(
+                                index="regulation_id",
+                                columns="pokemon_slug",
+                                values="normalized_value",
+                            ).sort_index()
+                            st.caption(
+                                "Misma serie en formato "
+                                "st.line_chart (índice = "
+                                "regulation_id, orden alfabético):"
+                            )
+                            st.line_chart(df_pivot)
+
+                            st.caption(
+                                "Valores **raw** (sin "
+                                "normalizar) por reg. y Pokémon:"
+                            )
+                            st.dataframe(
+                                df_cross[
+                                    [
+                                        "regulation_id",
+                                        "pokemon_slug",
+                                        "raw_value",
+                                        "normalized_value",
+                                    ]
+                                ].sort_values(
+                                    [
+                                        "regulation_id",
+                                        "pokemon_slug",
+                                    ]
+                                ),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+
+                            st.info(
+                                "Los valores están normalizados "
+                                "(z-score) para comparar "
+                                "tendencias entre regulaciones. "
+                                "Valor > 0 = por encima de la media "
+                                "del meta en esa regulación. Datos "
+                                "disponibles desde las regulaciones "
+                                "con Parquets en data/raw/."
+                            )
+        except Exception as exc:
+            st.error(f"Cross-Reg: {exc}")
