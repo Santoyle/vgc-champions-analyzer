@@ -47,8 +47,15 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# dbt
+dbt/target/
+dbt/dbt_packages/
+
 # Streamlit
 .streamlit/
+
+# Documentos de investigación — solo locales, demasiado grandes para el repo
+docs/research/*.pdf
 
 # EXCEPCIONES — estos archivos DEBEN commitearse
 # aunque estén en carpetas ignoradas
