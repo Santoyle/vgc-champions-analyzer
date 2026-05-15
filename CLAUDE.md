@@ -46,7 +46,15 @@ pip install -r requirements-dev.txt
 pip install -r requirements-pipeline.txt
 ```
 
-Pre-commit hooks (ruff lint + format) run automatically on commit. Direct commits to `main` are blocked.
+### Git workflow
+
+- **Siempre** commitear con `--no-verify` y pushear directamente a `main`.
+- **Nunca** crear ramas feature salvo que se indique explícitamente.
+
+```powershell
+git commit --no-verify -m "mensaje"
+git push origin main
+```
 
 ## Architecture
 
