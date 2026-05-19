@@ -1,4 +1,4 @@
-﻿"""
+"""
 Tests unitarios para métricas MVP del módulo `src.app.modules.metrics`.
 
 Grupos:

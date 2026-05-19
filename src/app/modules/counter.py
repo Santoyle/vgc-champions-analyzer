@@ -31,6 +31,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src.app.modules.wp import (
+    ALL_TYPES,
+    ReplayFeatures,
+    extract_features,
+)
+
 log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
@@ -118,6 +124,52 @@ class CounterResult:
     counters_directly: list[str] = field(default_factory=list)
 
 
+@dataclass
+class WPCounterResult:
+    """
+    Resultado de un counter calculado via WP model.
+
+    A diferencia de CounterResult (heurístico), WPCounterResult usa el modelo
+    de Win Probability para estimar la ventaja del counter contra el rival.
+
+    Attributes:
+        species: Nombre de la especie counter.
+        wp_score: Win Probability estimada del counter (p1) contra el rival (p2).
+                  Rango [0, 1]. >0.5 = counter favorito.
+        heuristic_score: Score heurístico de respaldo (del heurístico v1).
+        types: Tipos del counter.
+        counters_directly: Rivales amenazados (del heurístico v1).
+    """
+
+    species: str
+    wp_score: float
+    heuristic_score: float
+    types: list[str] = field(default_factory=list)
+    counters_directly: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TeamMatchupResult:
+    """
+    Resultado de un equipo completo evaluado como anti-rival.
+
+    Attributes:
+        team: Lista de Pokémon del equipo.
+        wp_score: Win Probability estimada del equipo contra el rival.
+                  None si no hay modelo WP disponible.
+        heuristic_score: Score heurístico promedio de los slots del equipo.
+        source_replay_id: ID del replay de origen si viene de replays reales.
+                          None si es generado.
+        regulation_id: Regulación del equipo.
+    """
+
+    team: list[str]
+    wp_score: float | None
+    heuristic_score: float
+    source_replay_id: str | None
+    regulation_id: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers privados
 # ---------------------------------------------------------------------------
@@ -149,6 +201,83 @@ def _load_pokemon_data() -> dict[str, dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001
         log.warning("Error cargando pokemon_master.json: %s", exc)
         return {}
+
+
+def _load_recent_teams(
+    regulation_id: str,
+    max_teams: int = 200,
+) -> list[dict[str, Any]]:
+    """
+    Carga equipos recientes desde los Parquets de Showdown en
+    data/raw/reg={id}/source=showdown/.
+
+    Retorna equipos únicos deduplicados por composición de Pokémon.
+
+    Args:
+        regulation_id: ID de la regulación.
+        max_teams: Máximo de equipos únicos a cargar.
+
+    Returns:
+        Lista de dicts con keys: team (list[str]), replay_id (str),
+        rating (int). Lista vacía si no hay datos.
+    """
+    import glob as glob_module
+    import json as _json
+
+    import pandas as pd
+
+    raw_pattern = str(
+        _PROJECT_ROOT
+        / "data"
+        / "raw"
+        / f"reg={regulation_id}"
+        / "source=showdown"
+        / "*.parquet"
+    )
+
+    parquet_files = glob_module.glob(raw_pattern)
+    if not parquet_files:
+        log.debug("Sin Parquets de Showdown para %s", regulation_id)
+        return []
+
+    teams: list[dict[str, Any]] = []
+    seen_compositions: set[str] = set()
+
+    for pq_file in sorted(parquet_files, reverse=True):
+        if len(teams) >= max_teams:
+            break
+        try:
+            df = pd.read_parquet(pq_file)
+            for _, row in df.iterrows():
+                if len(teams) >= max_teams:
+                    break
+                for team_col in ("team_p1_json", "team_p2_json"):
+                    try:
+                        team: list[str] = _json.loads(
+                            str(row.get(team_col, "[]"))
+                        )
+                        if not team or len(team) < 3:
+                            continue
+                        # Deduplicar por composición (set ordenado de nombres)
+                        comp_key = "|".join(
+                            sorted(str(p).lower() for p in team)
+                        )
+                        if comp_key in seen_compositions:
+                            continue
+                        seen_compositions.add(comp_key)
+                        teams.append({
+                            "team": [str(p) for p in team],
+                            "replay_id": str(row.get("replay_id", "")),
+                            "rating": int(row.get("rating", 1500) or 1500),
+                        })
+                    except Exception:  # noqa: BLE001
+                        continue
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Error leyendo %s: %s", pq_file, exc)
+            continue
+
+    log.info("Cargados %d equipos únicos para %s", len(teams), regulation_id)
+    return teams
 
 
 def _type_advantage_score(
@@ -327,9 +456,292 @@ def heuristic_counter(
     return results[:top_n]
 
 
+def wp_counter(
+    rival_team: Any,
+    roster: list[str],
+    regulation_id: str,
+    pokemon_data: dict[str, dict[str, Any]] | None = None,
+    top_n: int = 15,
+) -> list[WPCounterResult]:
+    """
+    Calcula counters usando el modelo WP para scoring.
+
+    Para cada Pokémon del roster, construye un ReplayFeatures simulado donde
+    ese Pokémon es el equipo de p1 (solo ese slot) y el equipo rival es p2.
+    Predice la WP con el modelo actual.
+
+    Si el modelo WP no está disponible para la regulación, retorna lista vacía.
+
+    Args:
+        rival_team: ParsedTeam del equipo rival.
+        roster: Lista de nombres de Pokémon candidatos a counter.
+        regulation_id: ID de la regulación activa.
+        pokemon_data: Datos maestros de Pokémon. Si None, se carga desde disco.
+        top_n: Máximo de counters a retornar.
+
+    Returns:
+        Lista de WPCounterResult ordenada por wp_score descendente.
+        Lista vacía si el modelo no está disponible.
+    """
+    try:
+        from src.app.modules.wp_train import predict_proba
+    except ImportError:
+        log.warning("wp_train no disponible — WP counter no soportado")
+        return []
+
+    if not roster:
+        return []
+
+    rival_slots = getattr(rival_team, "slots", [])
+    if not rival_slots:
+        return []
+
+    pk_data = pokemon_data or _load_pokemon_data()
+
+    rival_species = [
+        str(getattr(slot, "species", ""))
+        for slot in rival_slots
+        if getattr(slot, "species", "")
+    ]
+    if not rival_species:
+        return []
+
+    # Construir ReplayFeatures para cada counter candidato vs el equipo rival.
+    # _MockReplayForWP es local para no contaminar el namespace del módulo.
+    features_list: list[ReplayFeatures] = []
+    valid_roster: list[str] = []
+
+    for species_name in roster:
+
+        class _MockReplayForWP:
+            p1 = "counter_candidate"
+            p2 = "rival"
+            winner: str | None = None
+            rating = 1750
+            upload_time = 0
+            raw_log = ""
+
+            def __init__(self, counter: str, rival: list[str]) -> None:
+                self.replay_id = f"wp-counter-{counter}"
+                self.regulation_id = regulation_id
+                self.team_p1: list[str] = [counter]
+                self.team_p2: list[str] = rival
+
+        mock_replay = _MockReplayForWP(species_name, rival_species)
+        feat = extract_features(mock_replay, pokemon_data=pk_data)
+        if feat is not None:
+            features_list.append(feat)
+            valid_roster.append(species_name)
+
+    if not features_list:
+        log.debug("Sin features válidas para WP counter")
+        return []
+
+    probs = predict_proba(features_list, regulation_id)
+    if probs is None:
+        log.info(
+            "Modelo WP no disponible para %s — sin WP counters", regulation_id
+        )
+        return []
+
+    # Score heurístico de respaldo para cada counter
+    heuristic_results = heuristic_counter(
+        rival_team,
+        roster=valid_roster,
+        pokemon_data=pk_data,
+        top_n=len(valid_roster),
+    )
+    heuristic_map = {r.species: r.score for r in heuristic_results}
+    types_map = {r.species: r.types for r in heuristic_results}
+    threatens_map = {r.species: r.counters_directly for r in heuristic_results}
+
+    results: list[WPCounterResult] = []
+    for i, species_name in enumerate(valid_roster):
+        if i >= len(probs):
+            break
+        results.append(
+            WPCounterResult(
+                species=species_name,
+                wp_score=round(float(probs[i]), 4),
+                heuristic_score=heuristic_map.get(species_name, 0.0),
+                types=types_map.get(species_name, []),
+                counters_directly=threatens_map.get(species_name, []),
+            )
+        )
+
+    results.sort(key=lambda x: x.wp_score, reverse=True)
+    return results[:top_n]
+
+
+def top_teams_vs_rival(
+    rival_team: Any,
+    regulation_id: str,
+    pokemon_data: dict[str, dict[str, Any]] | None = None,
+    max_candidate_teams: int = 200,
+    top_n: int = 5,
+) -> list[TeamMatchupResult]:
+    """
+    Busca los mejores equipos completos anti-rival desde replays guardados.
+
+    Estrategia:
+      1. Carga equipos únicos de replays recientes de Showdown.
+      2. Para cada equipo, calcula score:
+         - Con WP model: predict_proba del equipo completo vs rival.
+         - Sin WP model: promedio del heurístico v1 por slot.
+      3. Retorna top_n ordenados por score.
+
+    Args:
+        rival_team: ParsedTeam del equipo rival.
+        regulation_id: ID de la regulación activa.
+        pokemon_data: Datos maestros de Pokémon. Si None, carga desde disco.
+        max_candidate_teams: Máximo de equipos candidatos a evaluar.
+        top_n: Número de equipos a retornar.
+
+    Returns:
+        Lista de TeamMatchupResult ordenada por score descendente.
+        Lista vacía si no hay equipos candidatos o falla cualquier paso.
+    """
+    rival_slots = getattr(rival_team, "slots", [])
+    if not rival_slots:
+        return []
+
+    rival_species = [
+        str(getattr(slot, "species", ""))
+        for slot in rival_slots
+        if getattr(slot, "species", "")
+    ]
+    if not rival_species:
+        return []
+
+    pk_data = pokemon_data or _load_pokemon_data()
+    try:
+        candidate_teams = _load_recent_teams(regulation_id, max_candidate_teams)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Error cargando equipos candidatos: %s", exc)
+        return []
+
+    if not candidate_teams:
+        log.info(
+            "Sin equipos candidatos para %s — top_teams_vs_rival retorna vacío",
+            regulation_id,
+        )
+        return []
+
+    # ── Helpers internos para mock de replay/slot (locales, no contaminan módulo) ──
+
+    def _heuristic_score_for_team(
+        team_species: list[str],
+    ) -> float:
+        """Promedio de score heurístico por slot del equipo candidato."""
+
+        class _Slot:
+            def __init__(self, sp: str) -> None:
+                self.species = sp
+
+        class _Team:
+            def __init__(self, sp: str) -> None:
+                self.slots = [_Slot(sp)]
+
+        scores: list[float] = []
+        for sp in team_species:
+            h = heuristic_counter(
+                _Team(sp),
+                roster=[sp],
+                pokemon_data=pk_data,
+                top_n=1,
+            )
+            if h:
+                scores.append(h[0].score)
+        return sum(scores) / len(scores) if scores else 0.0
+
+    # ── Intentar usar WP model ──
+
+    wp_available = False
+    try:
+        from src.app.modules.wp_train import load_model, predict_proba
+
+        if load_model(regulation_id) is not None:
+            wp_available = True
+    except ImportError:
+        pass
+
+    results: list[TeamMatchupResult] = []
+
+    if wp_available:
+        from src.app.modules.wp import extract_features as _extract
+
+        features_list: list[ReplayFeatures] = []
+        valid_indices: list[int] = []
+
+        for i, cand in enumerate(candidate_teams):
+
+            class _MockTeamReplay:
+                p1 = "candidate"
+                p2 = "rival"
+                winner: str | None = None
+                upload_time = 0
+                raw_log = ""
+
+                def __init__(
+                    self, idx: int, team: list[str], rival: list[str], rat: int
+                ) -> None:
+                    self.replay_id = f"team-{idx}"
+                    self.regulation_id = regulation_id
+                    self.rating = rat
+                    self.team_p1 = team
+                    self.team_p2 = rival
+
+            mock = _MockTeamReplay(i, cand["team"], rival_species, cand["rating"])
+            feat = _extract(mock, pokemon_data=pk_data)
+            if feat is not None:
+                features_list.append(feat)
+                valid_indices.append(i)
+
+        if features_list:
+            from src.app.modules.wp_train import predict_proba as _predict
+
+            probs = _predict(features_list, regulation_id)
+            if probs is not None:
+                for j, idx in enumerate(valid_indices):
+                    if j >= len(probs):
+                        break
+                    cand = candidate_teams[idx]
+                    results.append(
+                        TeamMatchupResult(
+                            team=cand["team"],
+                            wp_score=round(float(probs[j]), 4),
+                            heuristic_score=_heuristic_score_for_team(cand["team"]),
+                            source_replay_id=cand.get("replay_id") or None,
+                            regulation_id=regulation_id,
+                        )
+                    )
+                results.sort(key=lambda x: x.wp_score or 0.0, reverse=True)
+                return results[:top_n]
+
+    # ── Fallback: heurístico promedio por slot ──
+
+    log.info("WP no disponible — usando heurístico para top_teams_vs_rival")
+    for cand in candidate_teams:
+        results.append(
+            TeamMatchupResult(
+                team=cand["team"],
+                wp_score=None,
+                heuristic_score=_heuristic_score_for_team(cand["team"]),
+                source_replay_id=cand.get("replay_id") or None,
+                regulation_id=regulation_id,
+            )
+        )
+    results.sort(key=lambda x: x.heuristic_score, reverse=True)
+    return results[:top_n]
+
+
 __all__ = [
     "CounterResult",
+    "WPCounterResult",
+    "TeamMatchupResult",
     "heuristic_counter",
+    "wp_counter",
+    "top_teams_vs_rival",
     "TYPE_CHART",
     "ITEM_SYNERGY_SCORES",
 ]

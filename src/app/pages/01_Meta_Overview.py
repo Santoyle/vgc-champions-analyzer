@@ -14,6 +14,19 @@ from src.app.data.sql.views import (
     create_usage_by_reg,
     register_raw_view,
 )
+from src.app.modules.clustering import (
+    ClusterResult,
+    cluster_hdbscan,
+    cluster_kmeans,
+    find_optimal_kmeans_k,
+)
+from src.app.modules.graph_pmi import (
+    CommunityResult,
+    build_pmi_graph,
+    detect_communities,
+    graph_to_plotly,
+)
+from src.app.modules.pmi import compute_pmi_from_teammates
 from src.app.utils.db import get_duckdb
 from src.app.utils.session import init_session
 
@@ -62,6 +75,24 @@ def load_teammates_data(
         return df
     except Exception as exc:  # noqa: BLE001
         log.warning("Error cargando teammates para %s: %s", reg_id, exc)
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_pmi_for_graph(
+    reg_id: str,
+    _con: duckdb.DuckDBPyConnection,
+) -> pd.DataFrame:
+    """Carga y cachea el DataFrame de PMI para el grafo."""
+    try:
+        register_raw_view(_con)
+        df_tm = create_teammates_by_pkm(_con, reg_id)
+        df_usage = create_usage_by_reg(_con, reg_id)
+        if df_tm.empty or df_usage.empty:
+            return pd.DataFrame()
+        return compute_pmi_from_teammates(df_tm, df_usage)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Sin datos PMI para grafo %s: %s", reg_id, exc)
         return pd.DataFrame()
 
 
@@ -329,55 +360,107 @@ with tab_trend:
 
 with tab_clusters:
     st.subheader("Clusters de uso")
-    st.caption("Agrupación de Pokémon por perfil de uso. Requiere scikit-learn.")
+    st.caption(
+        "Agrupación de Pokémon por perfil de uso. "
+        "KMeans requiere especificar k. "
+        "HDBSCAN detecta clusters automáticamente."
+    )
 
-    if len(df_usage) < 10:
-        st.info(
-            "Se necesitan al menos 10 Pokémon con datos para calcular clusters."
-        )
+    if len(df_usage) < 15:
+        st.info("Se necesitan al menos 15 Pokémon para calcular clusters.")
     else:
-        try:
-            import numpy as np
-            from sklearn.cluster import KMeans
-            from sklearn.preprocessing import StandardScaler
+        cluster_method = st.radio(
+            "Método de clustering:",
+            options=["KMeans", "HDBSCAN"],
+            horizontal=True,
+            key="cluster_method",
+        )
 
-            feature_cols = ["avg_usage_pct", "max_usage_pct", "min_usage_pct"]
-            available_cols = [c for c in feature_cols if c in df_usage.columns]
+        df_cluster_input = df_usage.head(min(100, len(df_usage))).copy()
 
-            if len(available_cols) < 2:
-                st.info("Columnas insuficientes para clustering.")
-            else:
-                df_cluster = df_usage.head(50).copy()
-                X = df_cluster[available_cols].fillna(0).values
+        cluster_result: ClusterResult | None = None
 
-                scaler = StandardScaler()
-                X_scaled = scaler.fit_transform(X)
+        if cluster_method == "KMeans":
+            n_clusters = st.slider(
+                "Número de clusters (k)",
+                min_value=2,
+                max_value=min(8, len(df_cluster_input) - 1),
+                value=4,
+                key="cluster_n",
+            )
+            auto_k = st.checkbox(
+                "Detectar k óptimo automáticamente (puede tardar)",
+                key="cluster_auto_k",
+            )
+            if auto_k:
+                with st.spinner("Calculando k óptimo..."):
+                    optimal_k = find_optimal_kmeans_k(
+                        df_cluster_input,
+                        k_min=2,
+                        k_max=min(8, len(df_cluster_input) - 1),
+                    )
+                    st.info(f"K óptimo detectado: **{optimal_k}** clusters")
+                    n_clusters = optimal_k
 
-                n_clusters = st.slider(
-                    "Número de clusters",
-                    min_value=2,
-                    max_value=min(8, len(df_cluster) - 1),
-                    value=4,
-                    key="cluster_n",
-                )
-
-                kmeans = KMeans(
+            try:
+                cluster_result = cluster_kmeans(
+                    df_cluster_input,
                     n_clusters=n_clusters,
-                    random_state=42,
-                    n_init=10,
                 )
-                df_cluster["cluster"] = kmeans.fit_predict(X_scaled)
-                df_cluster["cluster_label"] = (
-                    "Cluster " + df_cluster["cluster"].astype(str)
-                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Error en KMeans para %s: %s", reg_id, exc)
+                st.warning(f"Error en KMeans: {exc}")
 
+        else:  # HDBSCAN
+            min_cluster_size = st.slider(
+                "Tamaño mínimo de cluster",
+                min_value=3,
+                max_value=30,
+                value=15,
+                key="hdbscan_min_size",
+            )
+            try:
+                import hdbscan as _hdbscan_check  # noqa: F401
+
+                cluster_result = cluster_hdbscan(
+                    df_cluster_input,
+                    min_cluster_size=min_cluster_size,
+                )
+            except ImportError:
+                st.warning(
+                    "hdbscan no disponible. Instala con: pip install hdbscan"
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Error en HDBSCAN para %s: %s", reg_id, exc)
+                st.warning(f"Error en HDBSCAN: {exc}")
+
+        if cluster_result is not None:
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("Clusters", cluster_result.n_clusters)
+            with m2:
+                sil = cluster_result.silhouette
+                st.metric("Silhouette", f"{sil:.3f}" if sil is not None else "N/A")
+            with m3:
+                if cluster_result.method == "hdbscan":
+                    st.metric("Ruido", cluster_result.noise_count)
+                else:
+                    st.metric("Método", "KMeans")
+
+            df_plot_c = cluster_result.df_clustered
+            if (
+                "avg_usage_pct" in df_plot_c.columns
+                and "max_usage_pct" in df_plot_c.columns
+            ):
                 fig_cluster = px.scatter(
-                    df_cluster,
+                    df_plot_c,
                     x="avg_usage_pct",
                     y="max_usage_pct",
                     color="cluster_label",
                     hover_name="pokemon",
-                    title=f"KMeans clusters ({n_clusters}) — {reg_id}",
+                    title=(
+                        f"{cluster_result.method.upper()} clusters — {reg_id}"
+                    ),
                     labels={
                         "avg_usage_pct": "Uso promedio (%)",
                         "max_usage_pct": "Pico uso (%)",
@@ -386,30 +469,161 @@ with tab_clusters:
                 fig_cluster.update_layout(height=450)
                 st.plotly_chart(fig_cluster, use_container_width=True)
 
-                cluster_summary = (
-                    df_cluster.groupby("cluster_label")
-                    .agg(
-                        n_pokemon=("pokemon", "count"),
-                        avg_uso=("avg_usage_pct", "mean"),
-                        ejemplos=(
-                            "pokemon",
-                            lambda x: ", ".join(x.head(3).tolist()),
-                        ),
-                    )
-                    .round(2)
-                    .reset_index()
+            cluster_summary = (
+                df_plot_c.groupby("cluster_label")
+                .agg(
+                    n_pokemon=("pokemon", "count"),
+                    avg_uso=("avg_usage_pct", "mean"),
+                    ejemplos=(
+                        "pokemon",
+                        lambda x: ", ".join(x.head(3).tolist()),
+                    ),
                 )
-                st.dataframe(
-                    cluster_summary,
-                    use_container_width=True,
-                    hide_index=True,
+                .round(2)
+                .reset_index()
+            )
+            st.dataframe(
+                cluster_summary,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        # ── Sección grafo PMI + Louvain ───────────────────────────────────
+        st.divider()
+        st.subheader("🕸️ Red PMI + Comunidades Louvain")
+        st.caption(
+            "Nodos = Pokémon. Aristas = co-uso frecuente (PPMI > umbral). "
+            "Colores = comunidades Louvain."
+        )
+
+        df_pmi_graph = load_pmi_for_graph(reg_id, con)
+
+        if df_pmi_graph.empty:
+            st.info(
+                f"Sin datos de co-uso disponibles para {reg_id}. "
+                "El grafo requiere datos de teammates de Smogon."
+            )
+        else:
+            ppmi_threshold = st.slider(
+                "Umbral PPMI mínimo para arista",
+                min_value=0.0,
+                max_value=2.0,
+                value=0.1,
+                step=0.1,
+                key="graph_ppmi_threshold",
+            )
+            top_nodes_graph = st.slider(
+                "Máximo de nodos en el grafo",
+                min_value=10,
+                max_value=60,
+                value=30,
+                step=5,
+                key="graph_top_nodes",
+            )
+
+            try:
+                import networkx as nx  # noqa: F401
+
+                G = build_pmi_graph(
+                    df_pmi_graph,
+                    ppmi_threshold=ppmi_threshold,
+                    top_pokemon=top_nodes_graph,
                 )
 
-        except ImportError:
-            st.warning(
-                "scikit-learn no disponible. "
-                "Instala con: pip install scikit-learn"
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Error en clustering para %s: %s", reg_id, exc)
-            st.warning(f"Error al calcular clusters. Detalle: {exc}")
+                if G.number_of_nodes() == 0:
+                    st.info(
+                        f"Sin aristas sobre el umbral PPMI={ppmi_threshold}. "
+                        "Reduce el umbral para ver el grafo."
+                    )
+                else:
+                    comm_result: CommunityResult | None = detect_communities(G)
+                    graph_data = graph_to_plotly(G, comm_result)
+
+                    g1, g2, g3 = st.columns(3)
+                    with g1:
+                        st.metric("Nodos", G.number_of_nodes())
+                    with g2:
+                        st.metric("Aristas", G.number_of_edges())
+                    with g3:
+                        if comm_result is not None:
+                            st.metric(
+                                "Comunidades", comm_result.n_communities
+                            )
+                            st.caption(
+                                f"Modularidad: {comm_result.modularity:.3f}"
+                            )
+
+                    if graph_data:
+                        fig_graph = go.Figure()
+
+                        fig_graph.add_trace(
+                            go.Scatter(
+                                x=graph_data["edge_x"],
+                                y=graph_data["edge_y"],
+                                mode="lines",
+                                line={"width": 0.5, "color": "#888"},
+                                hoverinfo="none",
+                                showlegend=False,
+                            )
+                        )
+
+                        fig_graph.add_trace(
+                            go.Scatter(
+                                x=graph_data["node_x"],
+                                y=graph_data["node_y"],
+                                mode="markers+text",
+                                text=graph_data["node_text"],
+                                textposition="top center",
+                                textfont={"size": 9},
+                                marker={
+                                    "size": 10,
+                                    "color": graph_data["node_colors"],
+                                    "colorscale": "Viridis",
+                                    "showscale": True,
+                                    "colorbar": {"title": "Comunidad"},
+                                },
+                                hovertext=graph_data["node_text"],
+                                hoverinfo="text",
+                            )
+                        )
+
+                        fig_graph.update_layout(
+                            height=500,
+                            showlegend=False,
+                            xaxis={
+                                "showgrid": False,
+                                "zeroline": False,
+                                "showticklabels": False,
+                            },
+                            yaxis={
+                                "showgrid": False,
+                                "zeroline": False,
+                                "showticklabels": False,
+                            },
+                            title=(
+                                f"Red PMI — {reg_id} "
+                                f"({G.number_of_nodes()} Pokémon)"
+                            ),
+                        )
+                        st.plotly_chart(fig_graph, use_container_width=True)
+
+                    if comm_result is not None:
+                        st.caption("**Miembros por comunidad:**")
+                        for comm_id, members in sorted(
+                            comm_result.community_members.items()
+                        ):
+                            with st.expander(
+                                f"Comunidad {comm_id} ({len(members)} Pokémon)"
+                            ):
+                                st.write(", ".join(members[:20]))
+
+            except ImportError as exc:
+                st.warning(
+                    f"Dependencia faltante: {exc}. "
+                    "Instala networkx y python-louvain."
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "Error renderizando grafo PMI para %s: %s", reg_id, exc
+                )
+                st.warning(f"Error al construir el grafo. Detalle: {exc}")
