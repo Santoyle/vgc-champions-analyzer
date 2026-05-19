@@ -148,9 +148,10 @@ def build_demo_features(regulation_id: str) -> ReplayFeatures:
 init_session()
 reg_id: str = st.session_state["selected_reg_id"]
 
-st.title("Predictions")
+st.title("🧬 Predictions")
 st.caption(
-    f"Regulación: **{reg_id}** · Modelo Win Probability + SHAP"
+    f"Regulación: **{reg_id}** · Modelo Win Probability + SHAP · "
+    f"Gate: AUC ≥ {AUC_GATE} / Brier ≤ {BRIER_GATE}"
 )
 
 st.divider()
@@ -160,20 +161,17 @@ st.divider()
 metadata = get_model_metadata(reg_id)
 
 if metadata is None:
-    st.warning(
-        f"No hay modelo WP entrenado para **{reg_id}**.\n\n"
-        f"Para entrenar el modelo:\n"
-        f"```\n"
-        f"python scripts/train_wp.py --reg {reg_id}\n"
-        f"```\n"
-        f"O con datos sintéticos para probar:\n"
-        f"```\n"
-        f"python scripts/train_wp.py --synthetic-data\n"
-        f"```"
-    )
-    st.info(
-        f"El modelo requiere AUC >= {AUC_GATE} "
-        f"y Brier <= {BRIER_GATE} para ser promovido a producción."
+    st.markdown(
+        f"""
+<div class="empty-state">
+  <div class="icon">🤖</div>
+  <h3>Modelo en entrenamiento</h3>
+  <p>El modelo Win Probability para <strong>{reg_id}</strong> aún no está disponible.<br>
+  El sistema entrena automáticamente cada semana con los replays más recientes.<br>
+  <em>Gate de calidad: AUC ≥ {AUC_GATE} · Brier ≤ {BRIER_GATE}</em></p>
+</div>
+""",
+        unsafe_allow_html=True,
     )
     st.stop()
 

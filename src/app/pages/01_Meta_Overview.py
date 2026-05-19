@@ -131,11 +131,16 @@ with st.spinner(f"Cargando datos de {reg_id}..."):
     df_teammates = load_teammates_data(reg_id, con)
 
 if df_usage.empty:
-    st.warning(
-        f"⚠️ Sin datos de uso para **{reg_id}**. "
-        f"El pipeline de ingesta puede no haber procesado esta regulación todavía.\n\n"
-        f"Ejecuta: `python -m src.app.data.pipelines.prior_ingest --regs {reg_id}` "
-        f"o espera al próximo run del daily-ingest."
+    st.markdown(
+        """
+<div class="empty-state">
+  <div class="icon">📊</div>
+  <h3>Datos en proceso</h3>
+  <p>El sistema actualiza automáticamente cada día.<br>
+  Los datos de uso para esta regulación estarán disponibles pronto.</p>
+</div>
+""",
+        unsafe_allow_html=True,
     )
     st.stop()
 

@@ -287,6 +287,11 @@ if "team_slots" not in st.session_state:
         dict(_EMPTY_SLOT) for _ in range(6)
     ]
 
+_filled = sum(
+    1 for s in st.session_state["team_slots"] if s.get("species")
+)
+st.progress(_filled / 6, text=f"Equipo: {_filled}/6 slots completados")
+
 # ---------------------------------------------------------------------------
 # Layout principal: builder (izquierda) + info (derecha)
 # ---------------------------------------------------------------------------

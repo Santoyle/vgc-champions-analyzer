@@ -140,12 +140,17 @@ with st.spinner(f"Cargando métricas para {reg_id}..."):
     df_tpi = load_tpi_data(reg_id, con)
 
 if df_ei.empty and df_stc.empty and df_tpi.empty:
-    st.warning(
-        f"⚠️ Sin datos para **{reg_id}**. "
-        "El pipeline de ingesta necesita datos "
-        "de uso e ítems para calcular las métricas.\n\n"
-        f"Ejecuta: `python -m src.app.data.pipelines."
-        f"prior_ingest --regs {reg_id}`"
+    st.markdown(
+        """
+<div class="empty-state">
+  <div class="icon">📈</div>
+  <h3>Métricas en proceso</h3>
+  <p>El sistema calcula automáticamente EI, STC, TPI y las métricas avanzadas<br>
+  a medida que llegan nuevos datos de la regulación activa.<br>
+  Vuelve más tarde o selecciona otra regulación.</p>
+</div>
+""",
+        unsafe_allow_html=True,
     )
     st.stop()
 
@@ -176,14 +181,14 @@ st.divider()
 ) = st.tabs([
     "⚡ EI — Efficiency Item",
     "🏃 STC — Speed Tier Control",
-    "🎯 TPI — Threat Pressure Index",
-    "⚡ MLWR",
-    "📐 SPDO",
-    "🎯 LRE",
-    "⏱️ METI/MEIT",
-    "🎲 TAI",
+    "🎯 TPI — Threat Pressure",
+    "📈 MLWR — Win Rate",
+    "📐 SPDO — Defensa",
+    "🗂️ LRE — Leads",
+    "⏱️ METI / MEIT",
+    "🎲 TAI — Adaptabilidad",
     "🔢 Shapley SV",
-    "📊 Cross-Reg",
+    "🌐 Cross-Reg",
 ])
 
 # ── TAB 1 — EI ───────────────────────────────────────────────────────────────

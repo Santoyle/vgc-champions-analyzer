@@ -15,6 +15,63 @@ st.set_page_config(
 # Idempotente — solo inicializa si no existe
 init_session()
 
+st.markdown(
+    """
+<style>
+    .main { padding: 1rem 2rem; }
+    .metric-card {
+        background: #1E2130;
+        border: 1px solid #2D3748;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 0.5rem 0;
+    }
+    .metric-card h3 {
+        color: #94A3B8;
+        font-size: 0.85rem;
+        margin-bottom: 0.5rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .metric-card .value {
+        color: #F8FAFC;
+        font-size: 2rem;
+        font-weight: 700;
+    }
+    .section-header {
+        border-left: 4px solid #7C3AED;
+        padding-left: 1rem;
+        margin: 2rem 0 1rem 0;
+    }
+    .pokemon-tag {
+        display: inline-block;
+        background: #2D3748;
+        border-radius: 20px;
+        padding: 0.25rem 0.75rem;
+        margin: 0.2rem;
+        font-size: 0.85rem;
+        color: #E2E8F0;
+    }
+    .empty-state {
+        background: #1E2130;
+        border: 1px dashed #2D3748;
+        border-radius: 12px;
+        padding: 3rem;
+        text-align: center;
+        color: #94A3B8;
+    }
+    .empty-state .icon { font-size: 3rem; margin-bottom: 1rem; }
+    .empty-state h3 { color: #CBD5E1; margin-bottom: 0.5rem; }
+    .stTabs [data-baseweb="tab"] {
+        font-size: 0.9rem;
+        padding: 0.5rem 1rem;
+    }
+    div[data-testid="stMetricValue"] { font-size: 1.8rem; }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
 # 2) Selector de regulación en sidebar
 # Visible en TODAS las páginas gracias al entrypoint-as-layout
 render_regulation_selector()
